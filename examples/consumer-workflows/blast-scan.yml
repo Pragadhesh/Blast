@@ -1,0 +1,19 @@
+# Copy this into any repo's .github/workflows/blast-scan.yml to adopt Blast.
+# This is the whole integration -- no vendored Python, no local dependency
+# install. Add OPENAI_API_KEY, DATAHUB_SERVER, DATAHUB_TOKEN as repository
+# secrets first (Settings -> Secrets and variables -> Actions).
+
+name: Blast
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "models/**/*.sql"
+      - "models/**/*.yml"
+      - "models/**/*.yaml"
+
+jobs:
+  blast:
+    uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@main
+    secrets: inherit

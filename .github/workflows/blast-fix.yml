@@ -1,0 +1,61 @@
+name: Splint Fix (reusable)
+
+# Called from any repo via:
+#   jobs:
+#     splint:
+#       if: github.event.issue.pull_request && contains(github.event.comment.body, '/blast-fix')
+#       uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@main
+#       secrets: inherit
+# See examples/consumer-workflows/blast-fix.yml for the full wrapper.
+#
+# NOTE: like any comment-triggered workflow, the default GITHUB_TOKEN has
+# read-only access when the triggering PR comes from a fork -- Splint can't
+# push a fix branch in that case. That's a GitHub platform constraint, not
+# something this workflow can route around; document it for your users
+# rather than being surprised by it.
+
+on:
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+      DATAHUB_SERVER:
+        required: true
+      DATAHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the calling repo
+        uses: actions/checkout@v4
+
+      - name: Checkout Blast
+        uses: actions/checkout@v4
+        with:
+          repository: Pragadhesh/Blast
+          ref: main
+          path: .blast-agent
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Blast's dependencies
+        run: pip install -r .blast-agent/requirements.txt
+
+      - name: Run Splint
+        env:
+          PYTHONIOENCODING: utf-8
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATAHUB_SERVER: ${{ secrets.DATAHUB_SERVER }}
+          DATAHUB_TOKEN: ${{ secrets.DATAHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_PR_NUMBER: ${{ github.event.issue.number }}
+        run: python .blast-agent/agents/splint/main.py

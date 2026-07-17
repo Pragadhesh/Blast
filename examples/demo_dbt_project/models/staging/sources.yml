@@ -1,0 +1,28 @@
+version: 2
+
+sources:
+  - name: ecommerce
+    schema: raw
+    tables:
+      - name: orders
+        columns:
+          - name: order_id
+            data_type: integer
+          - name: customer_id
+            data_type: integer
+          - name: order_status
+            data_type: varchar
+          - name: order_total
+            data_type: numeric(10,2)
+          - name: order_total_tax
+            data_type: numeric(10,2)
+          - name: order_date
+            data_type: date
+      - name: customers
+        columns:
+          - name: customer_id
+            data_type: integer
+          - name: customer_name
+            data_type: varchar
+          - name: signup_date
+            data_type: date

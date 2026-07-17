@@ -1,0 +1,16 @@
+name: 'blast_demo'
+version: '1.0.0'
+config-version: 2
+
+profile: 'blast_demo'
+
+model-paths: ["models"]
+
+models:
+  blast_demo:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table

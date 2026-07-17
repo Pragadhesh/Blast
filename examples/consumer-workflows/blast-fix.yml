@@ -1,0 +1,20 @@
+# Copy this into any repo's .github/workflows/blast-fix.yml alongside
+# blast-scan.yml to enable the /blast-fix comment trigger. Requires the
+# same repository secrets as blast-scan.yml.
+#
+# NOTE: if PRs in this repo can come from forks, GITHUB_TOKEN won't have
+# push access when triggered from a fork's PR -- that's a GitHub platform
+# restriction on comment-triggered workflows, not something this wrapper
+# can work around.
+
+name: Splint
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  splint:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '/blast-fix')
+    uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@main
+    secrets: inherit

@@ -1,0 +1,52 @@
+{
+  "_comment": "Mock DataHub lineage response used when BLAST_MOCK_DATAHUB=1. Mirrors the shape datahub_client.py expects back from the real lineage query plus each node's viewProperties.logic aspect.",
+  "changed_dataset": {
+    "urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,blast_demo.stg_orders,PROD)",
+    "name": "stg_orders",
+    "prior_incident_count": 2
+  },
+  "downstream": [
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,blast_demo.int_orders_enriched,PROD)",
+      "name": "int_orders_enriched",
+      "hops": 1,
+      "platform": "dbt",
+      "owners": ["urn:li:corpuser:data-eng"],
+      "view_logic": "select\n    o.order_id,\n    o.customer_id,\n    o.order_status,\n    o.order_total,\n    o.order_total_tax,\n    o.order_date,\n    c.customer_name\nfrom stg_orders o\nleft join stg_customers c\n    on o.customer_id = c.customer_id\n"
+    },
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,blast_demo.fct_orders,PROD)",
+      "name": "fct_orders",
+      "hops": 1,
+      "platform": "dbt",
+      "owners": ["urn:li:corpuser:data-eng"],
+      "view_logic": "select\n    order_id,\n    customer_id,\n    order_status,\n    order_date\nfrom stg_orders\n"
+    },
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,blast_demo.rpt_revenue,PROD)",
+      "name": "rpt_revenue",
+      "hops": 1,
+      "platform": "dbt",
+      "owners": ["urn:li:corpuser:finance-analytics"],
+      "view_logic": "select\n    date_trunc('month', order_date) as revenue_month,\n    sum(order_total_tax) as total_tax_collected\nfrom stg_orders\ngroup by 1\n"
+    },
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,blast_demo.rpt_daily_order_value,PROD)",
+      "name": "rpt_daily_order_value",
+      "hops": 2,
+      "parent": "int_orders_enriched",
+      "platform": "dbt",
+      "owners": ["urn:li:corpuser:ops-analytics"],
+      "view_logic": "select\n    order_date,\n    sum(order_total) as daily_order_value\nfrom int_orders_enriched\ngroup by 1\n"
+    },
+    {
+      "urn": "urn:li:dataset:(urn:li:dataPlatform:dbt,blast_demo.rpt_customer_activity,PROD)",
+      "name": "rpt_customer_activity",
+      "hops": 2,
+      "parent": "int_orders_enriched",
+      "platform": "dbt",
+      "owners": ["urn:li:corpuser:crm-sync"],
+      "view_logic": "select\n    customer_id,\n    customer_name,\n    count(order_id) as order_count,\n    max(order_date) as last_order_date\nfrom int_orders_enriched\ngroup by 1, 2\n"
+    }
+  ]
+}

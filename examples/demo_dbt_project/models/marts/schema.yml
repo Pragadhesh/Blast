@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: fct_orders
+    description: One row per order; grain matches stg_orders.
+  - name: rpt_revenue
+    description: Monthly tax revenue rollup, consumed by the Finance dashboard.
+  - name: rpt_daily_order_value
+    description: Daily gross order value, consumed by the Ops dashboard.
+  - name: rpt_customer_activity
+    description: Per-customer order activity, consumed by the CRM sync job.

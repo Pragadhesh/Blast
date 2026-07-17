@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: stg_orders
+    description: One row per order, lightly renamed from the raw ecommerce source.
+    columns:
+      - name: order_id
+        data_type: integer
+        tests: [unique, not_null]
+      - name: customer_id
+        data_type: integer
+        tests: [not_null]
+      - name: order_status
+        data_type: varchar
+      - name: order_total
+        data_type: numeric(10,2)
+        description: Gross order value before tax.
+      - name: order_total_tax
+        data_type: numeric(10,2)
+        description: Tax portion of the order total.
+      - name: order_date
+        data_type: date
+
+  - name: stg_customers
+    description: One row per customer.
+    columns:
+      - name: customer_id
+        data_type: integer
+        tests: [unique, not_null]
+      - name: customer_name
+        data_type: varchar
+      - name: signup_date
+        data_type: date

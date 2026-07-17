@@ -1,0 +1,41 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# Claude Code project memory -- local only, not pushed
+.claude/
+CLAUDE.md
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# datahub / docker local state
+.datahub/
+datahub-docker/
+
+# node (mermaid tooling, if any)
+node_modules/
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# logs / scratch
+*.log
+.cache/

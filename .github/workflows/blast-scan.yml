@@ -1,0 +1,56 @@
+name: Blast Scan (reusable)
+
+# Called from any repo via:
+#   jobs:
+#     blast:
+#       uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@main
+#       secrets: inherit
+# See examples/consumer-workflows/blast-scan.yml for the full wrapper a
+# consumer repo adds (it owns the pull_request trigger and path filter --
+# this reusable workflow only owns the job).
+
+on:
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+      DATAHUB_SERVER:
+        required: true
+      DATAHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the calling repo
+        uses: actions/checkout@v4
+
+      - name: Checkout Blast
+        uses: actions/checkout@v4
+        with:
+          repository: Pragadhesh/Blast
+          ref: main
+          path: .blast-agent
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Blast's dependencies
+        run: pip install -r .blast-agent/requirements.txt
+
+      - name: Run blast-scan
+        env:
+          PYTHONIOENCODING: utf-8
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATAHUB_SERVER: ${{ secrets.DATAHUB_SERVER }}
+          DATAHUB_TOKEN: ${{ secrets.DATAHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python .blast-agent/agents/blast-scan/main.py
