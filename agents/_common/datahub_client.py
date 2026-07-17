@@ -166,10 +166,11 @@ class DataHubClient:
         # database-qualified name; override via BLAST_DATASET_URN_TEMPLATE
         # with a {model} placeholder, e.g.:
         #   urn:li:dataset:(urn:li:dataPlatform:postgres,commerce_warehouse.public.{model},PROD)
-        template = os.environ.get(
-            "BLAST_DATASET_URN_TEMPLATE",
-            "urn:li:dataset:(urn:li:dataPlatform:dbt,{model},PROD)",
-        )
+        # `or` rather than `.get(key, default)` deliberately: an empty-string
+        # env var (e.g. an unset GitHub Actions workflow_call input, which
+        # arrives as "" rather than absent) should fall back too, not format
+        # into a blank URN.
+        template = os.environ.get("BLAST_DATASET_URN_TEMPLATE") or "urn:li:dataset:(urn:li:dataPlatform:dbt,{model},PROD)"
         return template.format(model=model_name)
 
     def count_recent_incidents(self, dataset_urn: str, days: int = 90) -> int:

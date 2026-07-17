@@ -2,6 +2,11 @@
 # This is the whole integration -- no vendored Python, no local dependency
 # install. Add OPENAI_API_KEY, DATAHUB_SERVER, DATAHUB_TOKEN as repository
 # secrets first (Settings -> Secrets and variables -> Actions).
+#
+# The `with:` block below is set for commerce-warehouse specifically (dbt
+# project under dbt/, ingested via the postgres source -- see its README).
+# Delete it entirely if your repo has dbt at the root and ingests via dbt
+# itself; those are Blast's defaults.
 
 name: Blast
 
@@ -9,11 +14,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - "models/**/*.sql"
-      - "models/**/*.yml"
-      - "models/**/*.yaml"
+      - "dbt/models/**/*.sql"
+      - "dbt/models/**/*.yml"
+      - "dbt/models/**/*.yaml"
 
 jobs:
   blast:
     uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@main
+    with:
+      dbt_models_path: "dbt/models/"
+      dataset_urn_template: "urn:li:dataset:(urn:li:dataPlatform:postgres,commerce_warehouse.public.{model},PROD)"
+      runs_on: self-hosted
     secrets: inherit

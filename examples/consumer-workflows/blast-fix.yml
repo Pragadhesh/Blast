@@ -6,6 +6,9 @@
 # push access when triggered from a fork's PR -- that's a GitHub platform
 # restriction on comment-triggered workflows, not something this wrapper
 # can work around.
+#
+# The `with:` block below is set for commerce-warehouse specifically --
+# see the note in blast-scan.yml.
 
 name: Splint
 
@@ -17,4 +20,8 @@ jobs:
   splint:
     if: github.event.issue.pull_request && contains(github.event.comment.body, '/blast-fix')
     uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@main
+    with:
+      dbt_models_path: "dbt/models/"
+      dataset_urn_template: "urn:li:dataset:(urn:li:dataPlatform:postgres,commerce_warehouse.public.{model},PROD)"
+      runs_on: self-hosted
     secrets: inherit

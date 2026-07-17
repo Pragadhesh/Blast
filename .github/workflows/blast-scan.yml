@@ -4,6 +4,9 @@ name: Blast Scan (reusable)
 #   jobs:
 #     blast:
 #       uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@main
+#       with:
+#         dbt_models_path: dbt/models/   # only if your dbt project isn't at models/
+#         runs_on: self-hosted            # only if DataHub isn't reachable from GitHub-hosted runners
 #       secrets: inherit
 # See examples/consumer-workflows/blast-scan.yml for the full wrapper a
 # consumer repo adds (it owns the pull_request trigger and path filter --
@@ -11,6 +14,19 @@ name: Blast Scan (reusable)
 
 on:
   workflow_call:
+    inputs:
+      runs_on:
+        description: "Runner label. Use a self-hosted runner if DataHub isn't reachable from GitHub-hosted runners (e.g. a local-only instance)."
+        type: string
+        default: "ubuntu-latest"
+      dbt_models_path:
+        description: "Path prefix Blast filters changed files against, e.g. 'dbt/models/' if your dbt project isn't at the repo root."
+        type: string
+        default: "models/"
+      dataset_urn_template:
+        description: "URN template with a {model} placeholder. Leave blank to use Blast's dbt-platform default -- set this if your DataHub instance ingests via the postgres source instead."
+        type: string
+        default: ""
     secrets:
       OPENAI_API_KEY:
         required: false
@@ -25,7 +41,7 @@ permissions:
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     steps:
       - name: Checkout the calling repo
         uses: actions/checkout@v4
@@ -53,4 +69,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+          BLAST_DBT_MODELS_PATH: ${{ inputs.dbt_models_path }}
+          BLAST_DATASET_URN_TEMPLATE: ${{ inputs.dataset_urn_template }}
         run: python .blast-agent/agents/blast-scan/main.py

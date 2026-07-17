@@ -5,6 +5,9 @@ name: Splint Fix (reusable)
 #     splint:
 #       if: github.event.issue.pull_request && contains(github.event.comment.body, '/blast-fix')
 #       uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@main
+#       with:
+#         dbt_models_path: dbt/models/
+#         runs_on: self-hosted
 #       secrets: inherit
 # See examples/consumer-workflows/blast-fix.yml for the full wrapper.
 #
@@ -16,6 +19,19 @@ name: Splint Fix (reusable)
 
 on:
   workflow_call:
+    inputs:
+      runs_on:
+        description: "Runner label. Use a self-hosted runner if DataHub isn't reachable from GitHub-hosted runners (e.g. a local-only instance)."
+        type: string
+        default: "ubuntu-latest"
+      dbt_models_path:
+        description: "Path prefix Blast filters changed files against, e.g. 'dbt/models/' if your dbt project isn't at the repo root."
+        type: string
+        default: "models/"
+      dataset_urn_template:
+        description: "URN template with a {model} placeholder. Leave blank to use Blast's dbt-platform default -- set this if your DataHub instance ingests via the postgres source instead."
+        type: string
+        default: ""
     secrets:
       OPENAI_API_KEY:
         required: false
@@ -30,7 +46,7 @@ permissions:
 
 jobs:
   fix:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs_on }}
     steps:
       - name: Checkout the calling repo
         uses: actions/checkout@v4
@@ -58,4 +74,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_PR_NUMBER: ${{ github.event.issue.number }}
+          BLAST_DBT_MODELS_PATH: ${{ inputs.dbt_models_path }}
+          BLAST_DATASET_URN_TEMPLATE: ${{ inputs.dataset_urn_template }}
         run: python .blast-agent/agents/splint/main.py
