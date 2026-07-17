@@ -159,9 +159,18 @@ class DataHubClient:
         if self.mock:
             fixture = json.loads(self.mock_fixture.read_text())
             return fixture["changed_dataset"]["urn"]
-        # dbt datasets are keyed off the compiled dbt node name; adjust the
-        # platform/env segments below to match how your instance ingests dbt.
-        return f"urn:li:dataset:(urn:li:dataPlatform:dbt,{model_name},PROD)"
+        # Default assumes dbt-sourced ingestion, keyed off the compiled dbt
+        # node name. Instances ingesting via the postgres source instead
+        # (view SQL-inferred lineage -- no dbt run required, see
+        # commerce-warehouse's README) use a different platform and a
+        # database-qualified name; override via BLAST_DATASET_URN_TEMPLATE
+        # with a {model} placeholder, e.g.:
+        #   urn:li:dataset:(urn:li:dataPlatform:postgres,commerce_warehouse.public.{model},PROD)
+        template = os.environ.get(
+            "BLAST_DATASET_URN_TEMPLATE",
+            "urn:li:dataset:(urn:li:dataPlatform:dbt,{model},PROD)",
+        )
+        return template.format(model=model_name)
 
     def count_recent_incidents(self, dataset_urn: str, days: int = 90) -> int:
         """How many Blast-raised incidents this dataset has had in the last
