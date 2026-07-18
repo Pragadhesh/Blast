@@ -9,13 +9,13 @@ here so the two agents don't each hand-roll their own copy.
 
 from __future__ import annotations
 
-from github import Github
+from github import Auth, Github
 from github.PullRequest import PullRequest
 from github.Repository import Repository
 
 
 def get_repo(token: str, repo_full_name: str) -> Repository:
-    return Github(token).get_repo(repo_full_name)
+    return Github(auth=Auth.Token(token)).get_repo(repo_full_name)
 
 
 def fetch_file(repo: Repository, path: str, ref: str) -> str:

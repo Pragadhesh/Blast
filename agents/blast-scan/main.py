@@ -148,9 +148,9 @@ def run_real() -> None:
     pr_number = int(os.environ["GITHUB_PR_NUMBER"])
     token = os.environ["GITHUB_TOKEN"]
 
-    from github import Github
+    from github import Auth, Github
 
-    gh = Github(token)
+    gh = Github(auth=Auth.Token(token))
     repo = gh.get_repo(repo_full_name)
     pr = repo.get_pull(pr_number)
 

@@ -6,7 +6,7 @@ in place on re-runs, instead of spamming a new comment on every push.
 
 from __future__ import annotations
 
-from github import Github
+from github import Auth, Github
 
 from breakage_classifier import VERDICT_RANK, Finding
 from graph_renderer import render_mermaid
@@ -97,14 +97,19 @@ def build_comment_body(
 
 
 def post_or_update_comment(repo_full_name: str, pr_number: int, model_name: str, body: str, token: str) -> str:
-    gh = Github(token)
+    gh = Github(auth=Auth.Token(token))
     repo = gh.get_repo(repo_full_name)
     pr = repo.get_pull(pr_number)
 
-    bot_login = gh.get_user().login
+    # Matching on the marker alone, not also the comment author: GITHUB_TOKEN
+    # (the token GitHub Actions provides automatically) can't call GET /user
+    # to look up "who am I" -- that endpoint is restricted to real user/PAT
+    # sessions and returns a 403 for Actions/App tokens. The hidden marker is
+    # already a strong enough signature; a random other comment containing
+    # this exact HTML comment is effectively impossible.
     marker = _marker(model_name)
     for comment in pr.get_issue_comments():
-        if comment.user.login == bot_login and marker in comment.body:
+        if marker in comment.body:
             comment.edit(body)
             return comment.html_url
 
