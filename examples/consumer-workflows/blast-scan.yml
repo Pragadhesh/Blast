@@ -7,10 +7,20 @@
 # path filter to configure. Resolving a changed file to a DataHub entity is
 # handled entirely by DataHub search -- no per-repo config needed.
 #
-# `runs_on: self-hosted` below is set because commerce-warehouse's DataHub
-# instance is local-only and unreachable from GitHub-hosted runners. Delete
-# that line (falls back to ubuntu-latest) if your DataHub is reachable from
-# GitHub's cloud runners.
+# The `with:` block below is the actual, currently-running configuration
+# from commerce-warehouse (Blast's own live demo repo), not a hypothetical:
+#
+# - `runs_on: self-hosted` -- commerce-warehouse's DataHub instance is
+#   local-only and unreachable from GitHub-hosted runners. Delete this line
+#   (falls back to ubuntu-latest) if your DataHub is reachable from GitHub's
+#   cloud runners.
+# - `setup_python: false` -- on the self-hosted Windows runner actually
+#   running this, actions/setup-python's installer turned out to be flaky
+#   (fails with "'python-X.Y.Z-amd64.exe' is not recognized..." even though
+#   the download succeeded). The runner already has a working Python on
+#   PATH, so this skips the installer entirely instead of fighting it.
+#   Delete this line (defaults to true) if your self-hosted runner doesn't
+#   already have Python, or if you're on ubuntu-latest.
 
 name: Blast
 
@@ -30,4 +40,5 @@ jobs:
     uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@master
     with:
       runs_on: self-hosted
+      setup_python: false
     secrets: inherit

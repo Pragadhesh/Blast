@@ -6,6 +6,14 @@
 # push access when triggered from a fork's PR -- that's a GitHub platform
 # restriction on comment-triggered workflows, not something this wrapper
 # can work around.
+#
+# The `with:` block below is the actual, currently-running configuration
+# from commerce-warehouse (Blast's own live demo repo), not a hypothetical:
+# `setup_python: false` because the self-hosted runner's actions/setup-python
+# installer was flaky (see blast-scan.yml's wrapper for the full story), and
+# `models_root: "dbt/models/"` because that repo's dbt project isn't at the
+# repo root -- Splint needs to know where to look for a broken model's
+# source file, since DataHub's lineage graph doesn't expose file paths.
 
 name: Splint
 
@@ -24,6 +32,7 @@ jobs:
     uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@master
     with:
       runs_on: self-hosted
-      models_root: "models/"   # e.g. "dbt/models/" if your dbt project isn't at the repo root --
-                                # Splint locates a broken model's source file by this convention
+      setup_python: false
+      models_root: "dbt/models/"   # wherever your dbt project's models/ actually lives --
+                                    # defaults to "models/" (repo root) if omitted
     secrets: inherit
