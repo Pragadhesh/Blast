@@ -44,7 +44,7 @@ DEMO_CHANGED_FILES = [
 # through change_interpreter -- it decides relevance, not this list.
 _SKIP_EXTENSIONS = {".md", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".lock", ".pdf", ".woff", ".woff2"}
 
-PipelineResult = tuple[str, list[InterpretedChange], list[Finding], str, int]
+PipelineResult = tuple[str, list[InterpretedChange], list[Finding], str, int, float]
 
 
 def _merge_by_entity(changed_files: list[tuple[str, str, str]]) -> dict[str, InterpretedFile]:
@@ -102,6 +102,7 @@ def run_pipeline(merged: dict[str, InterpretedFile], datahub: DataHubClient) -> 
         summary = summarizer.summarize(entity_name, interpreted.changes, findings)
 
         history_count = 0
+        risk_score = 0.0
         if any(f.verdict != "safe" for f in findings):
             hard = sum(1 for f in findings if f.verdict == "hard_break")
             risky = sum(1 for f in findings if f.verdict == "silent_risk")
@@ -109,14 +110,16 @@ def run_pipeline(merged: dict[str, InterpretedFile], datahub: DataHubClient) -> 
             history_count = prior + 1
             datahub.write_incident(
                 dataset_urn=urn,
-                title=f"Blast: {entity_name} change broke {hard} and risked {risky} downstream model(s)",
+                title=f"Blast: {entity_name} change predicted to break {hard} and risk {risky} downstream model(s)",
                 description=(
-                    f"{summary}\n\nThis table has now triggered {history_count} Blast "
-                    f"incident(s) in the last 90 days."
+                    f"{summary}\n\nBlast has flagged {history_count} predicted breaking change(s) on this "
+                    f"table in the last 90 days. This reflects PRs Blast flagged pre-merge, not confirmed "
+                    f"shipped breakage."
                 ),
             )
+            risk_score = datahub.compute_and_write_risk_score(urn)
 
-        results.append((entity_name, interpreted.changes, findings, summary, history_count))
+        results.append((entity_name, interpreted.changes, findings, summary, history_count, risk_score))
 
     return results
 
@@ -138,8 +141,8 @@ def run_demo() -> None:
         print("No schema-relevant changes detected in the demo scenario.")
         return
 
-    for entity_name, _changes, findings, summary, history_count in results:
-        print(build_comment_body(entity_name, findings, summary, history_count))
+    for entity_name, _changes, findings, summary, history_count, risk_score in results:
+        print(build_comment_body(entity_name, findings, summary, history_count, risk_score))
         print("\n" + "=" * 80 + "\n")
 
 
@@ -178,8 +181,8 @@ def run_real() -> None:
     datahub = DataHubClient()
     results = run_pipeline(merged, datahub)
 
-    for entity_name, _changes, findings, summary, history_count in results:
-        body = build_comment_body(entity_name, findings, summary, history_count)
+    for entity_name, _changes, findings, summary, history_count, risk_score in results:
+        body = build_comment_body(entity_name, findings, summary, history_count, risk_score)
         url = post_or_update_comment(repo_full_name, pr_number, entity_name, body, token)
         print(f"Posted Blast report for `{entity_name}` -> {url}")
 

@@ -1,6 +1,7 @@
 """DataHub client: read downstream lineage, fetch each node's SQL, count
-prior incidents, and write Blast's findings back as a DataHub Incident (the
-"institutional memory" differentiator described in CLAUDE.md section 4).
+prior incidents, write Blast's findings back as a DataHub Incident, and
+maintain a compounding blast_risk_score Structured Property on the entity
+(the "institutional memory" differentiator described in CLAUDE.md section 4).
 
 Lineage reads try DataHub's MCP Server first (mcp_datahub_client.py -- the
 preferred, DataHub-native integration surface), then fall back automatically to
@@ -34,6 +35,18 @@ from mcp_datahub_client import MCPUnavailable, get_downstream_lineage_via_mcp, s
 DEFAULT_FIXTURE = (
     Path(__file__).resolve().parent.parent.parent / "examples" / "demo_dbt_project" / "lineage_fixture.json"
 )
+
+# The persistent "institutional memory" signal (CLAUDE.md section 4.2): unlike
+# the incident log, which is an append-only history, this is a single number
+# recomputed fresh on every run from that same history and written back onto
+# the entity itself -- so anyone browsing DataHub sees it without knowing to
+# go dig through incidents. Recomputing from the timestamped incident log each
+# time (rather than reading back and incrementing a stored value) means there's
+# no separate decay state to track, and no risk of it drifting from reality.
+_RISK_SCORE_PROPERTY_ID = "io.blast.riskScore"
+_RISK_SCORE_PROPERTY_URN = f"urn:li:structuredProperty:{_RISK_SCORE_PROPERTY_ID}"
+_RISK_SCORE_POINTS_PER_INCIDENT = 40.0
+_RISK_SCORE_MAX = 100.0
 
 
 @dataclass
@@ -208,27 +221,98 @@ class DataHubClient:
             matches.append({"urn": urn, "name": entity.get("name") or urn, "platform": platform_name or "unknown"})
         return matches
 
-    def count_recent_incidents(self, dataset_urn: str, days: int = 90) -> int:
-        """How many Blast-raised incidents this dataset has had in the last
-        `days` days -- the number behind the "this table has broken N times
-        in 90 days" institutional-memory line in the PR comment.
+    def _recent_incident_ages_days(self, dataset_urn: str, days: int) -> list[float]:
+        """Age (in days) of each Blast-raised incident on this dataset within
+        the last `days` days. Shared by count_recent_incidents() (a plain
+        count) and compute_and_write_risk_score() (a recency-weighted sum) so
+        both read the exact same underlying history.
         """
-        if self.mock:
-            fixture = json.loads(self.mock_fixture.read_text())
-            return int(fixture["changed_dataset"].get("prior_incident_count", 0))
-
         data = self._graphql(_INCIDENTS_QUERY, {"urn": dataset_urn})
         incidents = ((data.get("dataset") or {}).get("incidents") or {}).get("incidents") or []
 
-        cutoff_ms = int(time.time() * 1000) - days * 86_400_000
-        count = 0
+        now_ms = int(time.time() * 1000)
+        cutoff_ms = now_ms - days * 86_400_000
+        ages = []
         for incident in incidents:
             if incident.get("customType") != "BLAST_BREAKING_CHANGE":
                 continue
             created_time = ((incident.get("created") or {}).get("time")) or 0
             if created_time >= cutoff_ms:
-                count += 1
-        return count
+                ages.append((now_ms - created_time) / 86_400_000)
+        return ages
+
+    def count_recent_incidents(self, dataset_urn: str, days: int = 90) -> int:
+        """How many Blast-raised incidents this dataset has had in the last
+        `days` days -- the number behind the "flagged N predicted breaking
+        changes in the last 90 days" institutional-memory line in the PR
+        comment. Note this counts *flagged* PRs (written when blast-scan runs,
+        pre-merge), not confirmed shipped breakage -- see docs/architecture.md.
+        """
+        if self.mock:
+            fixture = json.loads(self.mock_fixture.read_text())
+            return int(fixture["changed_dataset"].get("prior_incident_count", 0))
+
+        return len(self._recent_incident_ages_days(dataset_urn, days))
+
+    def compute_and_write_risk_score(self, dataset_urn: str, days: int = 90) -> float:
+        """Recomputes blast_risk_score from scratch each run (recency-weighted
+        sum over recent incidents, not a stored value that gets incremented --
+        see the module-level comment above _RISK_SCORE_PROPERTY_ID) and writes
+        it back onto the entity as a DataHub Structured Property, so it's
+        visible on the entity itself, not just inside Blast's own PR comments.
+        Returns the score (0-100) either way.
+        """
+        if self.mock:
+            fixture = json.loads(self.mock_fixture.read_text())
+            prior = int(fixture["changed_dataset"].get("prior_incident_count", 0))
+            return min(_RISK_SCORE_MAX, (prior + 1) * _RISK_SCORE_POINTS_PER_INCIDENT)
+
+        ages = self._recent_incident_ages_days(dataset_urn, days)
+        score = min(
+            _RISK_SCORE_MAX,
+            sum(max(0.0, 1 - age / days) * _RISK_SCORE_POINTS_PER_INCIDENT for age in ages),
+        )
+
+        self._ensure_risk_score_property_exists()
+        self._graphql(
+            _UPSERT_RISK_SCORE_MUTATION,
+            {
+                "input": {
+                    "assetUrn": dataset_urn,
+                    "structuredPropertyInputParams": [
+                        {"structuredPropertyUrn": _RISK_SCORE_PROPERTY_URN, "values": [{"numberValue": score}]}
+                    ],
+                }
+            },
+        )
+        return score
+
+    def _ensure_risk_score_property_exists(self) -> None:
+        data = self._graphql(_STRUCTURED_PROPERTY_EXISTS_QUERY, {"urn": _RISK_SCORE_PROPERTY_URN})
+        if ((data.get("structuredProperty") or {}).get("definition") or {}).get("displayName"):
+            return
+
+        try:
+            self._graphql(
+                _CREATE_RISK_SCORE_PROPERTY_MUTATION,
+                {
+                    "input": {
+                        "id": _RISK_SCORE_PROPERTY_ID,
+                        "qualifiedName": _RISK_SCORE_PROPERTY_ID,
+                        "displayName": "Blast Risk Score",
+                        "description": (
+                            "Blast's compounding risk score for this dataset (0-100), recomputed from "
+                            "recent flagged breaking-change PRs. Higher = more/more-recent flags."
+                        ),
+                        "valueType": "urn:li:dataType:datahub.number",
+                        "cardinality": "SINGLE",
+                        "entityTypes": ["urn:li:entityType:datahub.dataset"],
+                    }
+                },
+            )
+        except RuntimeError as exc:
+            if "already exists" not in str(exc):
+                raise
 
     def write_incident(
         self,
@@ -315,5 +399,35 @@ query blastRecentIncidents($urn: String!) {
 _RAISE_INCIDENT_MUTATION = """
 mutation blastRaiseIncident($input: RaiseIncidentInput!) {
   raiseIncident(input: $input)
+}
+"""
+
+_STRUCTURED_PROPERTY_EXISTS_QUERY = """
+query blastRiskScorePropertyExists($urn: String!) {
+  structuredProperty(urn: $urn) {
+    definition {
+      displayName
+    }
+  }
+}
+"""
+
+_CREATE_RISK_SCORE_PROPERTY_MUTATION = """
+mutation blastCreateRiskScoreProperty($input: CreateStructuredPropertyInput!) {
+  createStructuredProperty(input: $input) {
+    urn
+  }
+}
+"""
+
+_UPSERT_RISK_SCORE_MUTATION = """
+mutation blastUpsertRiskScore($input: UpsertStructuredPropertiesInput!) {
+  upsertStructuredProperties(input: $input) {
+    properties {
+      structuredProperty {
+        urn
+      }
+    }
+  }
 }
 """

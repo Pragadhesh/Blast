@@ -8,9 +8,11 @@ examples/demo_pr_change/CHANGE_SCENARIO.md for the change that produced it.
 <!-- blast-report:stg_orders -->
 ### 🧨 **Blast** found 2 breaking changes and 1 silent risk downstream in `stg_orders`
 
-Changing `stg_orders` (renamed `order_total` -> `total_amount`, changed `order_total_tax` type: numeric(10,2) -> integer) affects 5 downstream model(s). 2 will break outright: int_orders_enriched, rpt_daily_order_value. 1 carry silent risk: rpt_revenue.
+Changing `stg_orders` (renamed `order_total` -> `total_amount`, changed `order_total_tax numeric(10,2)` -> `order_total_tax integer`) affects 5 downstream model(s). 2 will break outright: int_orders_enriched, rpt_daily_order_value. 1 carry silent risk: rpt_revenue.
 
-📜 **Institutional memory:** `stg_orders` has now triggered 3 Blast incidents in the last 90 days -- this isn't a one-off.
+📜 **Institutional memory:** `stg_orders` has been flagged for 3 predicted breaking changes in the last 90 days (risk score: 100/100) -- this isn't a one-off. (Flagged pre-merge, not confirmed shipped breakage.)
+
+👤 **Owners to loop in:** `int_orders_enriched` (data-eng), `rpt_revenue` (finance-analytics), `rpt_daily_order_value` (ops-analytics)
 
 #### Downstream impact
 
@@ -50,6 +52,7 @@ graph LR
     classDef hard_break fill:#ffdce0,stroke:#d1242f,stroke-width:2px,color:#1f2328
     classDef silent_risk fill:#fff8c5,stroke:#9a6700,stroke-width:2px,color:#1f2328
     classDef safe fill:#dafbe1,stroke:#1a7f37,stroke-width:2px,color:#1f2328
+    classDef needs_review fill:#ffe5b4,stroke:#bc4c00,stroke-width:2px,color:#1f2328
     classDef changed fill:#d0d7ff,stroke:#4c2889,stroke-width:2px,color:#1f2328
 ```
 

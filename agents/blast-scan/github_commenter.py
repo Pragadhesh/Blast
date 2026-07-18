@@ -29,6 +29,7 @@ def build_comment_body(
     findings: list[Finding],
     summary: str,
     history_count: int = 0,
+    risk_score: float = 0.0,
 ) -> str:
     hard = [f for f in findings if f.verdict == "hard_break"]
     risky = [f for f in findings if f.verdict == "silent_risk"]
@@ -52,8 +53,10 @@ def build_comment_body(
 
     if history_count > 1:
         lines.append(
-            f"\n📜 **Institutional memory:** `{model_name}` has now triggered "
-            f"{history_count} Blast incidents in the last 90 days -- this isn't a one-off."
+            f"\n📜 **Institutional memory:** `{model_name}` has been flagged for "
+            f"{history_count} predicted breaking changes in the last 90 days "
+            f"(risk score: {risk_score:.0f}/100) -- this isn't a one-off. "
+            f"(Flagged pre-merge, not confirmed shipped breakage.)"
         )
 
     owned_findings = [f for f in findings if f.verdict != "safe" and f.asset.owners]

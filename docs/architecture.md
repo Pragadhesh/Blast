@@ -89,6 +89,15 @@ flowchart TD
   `count_recent_incidents()` / `write_incident()` are the proven,
   live-tested write-back mechanism -- see "Known limitations" for what's
   verified vs. not about the MCP half specifically.
+  `compute_and_write_risk_score()` is the second write-back mechanism: a
+  DataHub Structured Property (`blast_risk_score`, 0-100) recomputed fresh
+  every run from the same incident history (recency-weighted, not a stored
+  counter that's incremented -- there's no separate decay state to drift
+  out of sync with reality) and written onto the entity itself, so it's
+  visible in DataHub's UI directly, not just inside Blast's PR comments.
+  Live-tested end-to-end against a running DataHub instance, including the
+  structured-property-definition bootstrap (`createStructuredProperty`,
+  idempotent) and the value write (`upsertStructuredProperties`).
 
 - **`breakage_classifier.py`** — one LLM call per downstream asset, given
   the upstream changes and whatever DataHub knows about that asset's
@@ -140,14 +149,27 @@ natively, against the MCP Server's tools directly:
 |---|---|
 | `datahub-search` | `entity_resolver.py` / `datahub_client.search_entity()` |
 | `datahub-lineage` | `datahub_client.get_downstream_lineage()` |
-| `datahub-quality` | `count_recent_incidents()` / `write_incident()` (Incidents, today) |
-| `datahub-enrich` | not implemented -- structured properties/tags would be the more idiomatic write-back target than raw Incidents; roadmap |
+| `datahub-quality` | `count_recent_incidents()` / `write_incident()` (Incidents) |
+| `datahub-enrich` | `compute_and_write_risk_score()` (Structured Properties) -- see below for why this calls the MCP-equivalent tools directly rather than the Skill itself |
 | `datahub-setup` | not applicable (interactive auth configuration) |
 
 A developer reviewing a Splint fix PR could separately run
 `/datahub-skills:datahub-lineage` themselves in their own Claude
 Code/Cursor session to explore the graph interactively -- a genuinely
 useful complementary tool, just not something Blast's pipeline depends on.
+
+`datahub-enrich` specifically was checked and ruled out as something Blast
+could call directly, not just assumed incompatible: its `SKILL.md`
+describes a four-step procedure (resolve -> plan -> **get human
+approval** -> execute via MCP tools or `datahub graphql`) with an explicit,
+hard-coded requirement -- *"Never execute writes without explicit user
+confirmation, even for single-entity updates."* That's fundamentally
+incompatible with an unattended GitHub Action, which has no human present
+to approve anything. So `compute_and_write_risk_score()` calls the same
+underlying MCP-equivalent write path (`upsertStructuredProperties` /
+`createStructuredProperty`) the Skill would use, without going through the
+Skill's interactive wrapper -- the honest framing is "does the same kind
+of write the Skill formalizes," not "uses DataHub Skills."
 
 ## Known limitations (by design, for this stage of the project)
 
@@ -160,10 +182,17 @@ useful complementary tool, just not something Blast's pipeline depends on.
   introspection). Run with `BLAST_DATAHUB_MODE=mcp` to confirm your
   specific server/tool names work, rather than relying on `auto` to
   silently fall back.
-- **`datahub-enrich`/structured-property write-back isn't implemented** --
-  see the Skills table above. Today's write-back is DataHub Incidents,
-  which is proven live; a "risk score" as a structured property is a
-  documented next step, not a claim made now.
+- **`blast_risk_score` reflects flagged PRs, not confirmed shipped
+  breakage.** Both the incident write and the risk-score recompute happen
+  when blast-scan runs -- i.e. when a PR is opened/updated, before anyone
+  has decided to merge it. A PR that gets closed without merging, or fixed
+  before merging, still counted toward the score at scan time; there's no
+  merge-time re-check that would down-weight or remove it. This is a
+  deliberate scope call, not an oversight -- the PR comment and score
+  wording say "flagged"/"predicted," not "broke," specifically because of
+  this gap. A merge-gated confirmation step (only counting a finding once
+  the PR that carries it actually merges) would close this, but adds a new
+  workflow trigger and isn't built yet.
 - **Entity resolution depends entirely on a confident DataHub search
   match.** If the LLM's guessed name/platform doesn't cleanly match
   anything in DataHub (a genuinely ambiguous name, or an entity DataHub
