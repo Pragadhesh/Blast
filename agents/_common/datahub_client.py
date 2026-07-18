@@ -198,12 +198,34 @@ class DataHubClient:
 
     @staticmethod
     def _best_search_match(matches: list[dict], name: str, platform_hint: str | None) -> str | None:
-        for match in matches:
-            if match["name"].lower() != name.lower():
-                continue
-            if platform_hint and match["platform"].lower() != platform_hint.lower():
-                continue
-            return match["urn"]
+        """Only an exact (case-insensitive) name match is ever trusted --
+        never a fuzzy best-guess. platform_hint is advisory, not a hard
+        filter: it's a guess change_interpreter makes from a file's location
+        or extension (e.g. a file under dbt/models/ -> "dbt"), and that
+        guess doesn't always match how an org actually ingested the entity
+        into DataHub (e.g. a dbt project materialized and ingested as real
+        Postgres views ends up under the "postgres" platform, not "dbt").
+        Requiring the platform to match too would silently skip a real,
+        unambiguous exact-name match -- worse than just preferring it.
+        """
+        exact = [m for m in matches if m["name"].lower() == name.lower()]
+        if not exact:
+            return None
+
+        if platform_hint:
+            hinted = [m for m in exact if m["platform"].lower() == platform_hint.lower()]
+            if hinted:
+                return hinted[0]["urn"]
+
+        distinct_urns = {m["urn"] for m in exact}
+        if len(distinct_urns) == 1:
+            # Exactly one real entity has this name -- platform_hint was
+            # just a wrong guess, not genuine ambiguity.
+            return exact[0]["urn"]
+
+        # Multiple distinct entities share this name across different
+        # platforms and none matches the hint -- genuinely ambiguous, so
+        # skip rather than guess.
         return None
 
     def _search_entity_graphql(self, name: str) -> list[dict]:
