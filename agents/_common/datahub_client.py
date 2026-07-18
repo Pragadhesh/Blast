@@ -29,7 +29,7 @@ from typing import Any
 
 import requests
 
-from mcp_datahub_client import MCPUnavailable, get_downstream_lineage_via_mcp
+from mcp_datahub_client import MCPUnavailable, get_downstream_lineage_via_mcp, search_entities_via_mcp
 
 DEFAULT_FIXTURE = (
     Path(__file__).resolve().parent.parent.parent / "examples" / "demo_dbt_project" / "lineage_fixture.json"
@@ -156,22 +156,57 @@ class DataHubClient:
         ]
 
     def resolve_changed_dataset_urn(self, model_name: str) -> str:
-        if self.mock:
-            fixture = json.loads(self.mock_fixture.read_text())
-            return fixture["changed_dataset"]["urn"]
-        # Default assumes dbt-sourced ingestion, keyed off the compiled dbt
-        # node name. Instances ingesting via the postgres source instead
-        # (view SQL-inferred lineage -- no dbt run required, see
-        # commerce-warehouse's README) use a different platform and a
-        # database-qualified name; override via BLAST_DATASET_URN_TEMPLATE
-        # with a {model} placeholder, e.g.:
-        #   urn:li:dataset:(urn:li:dataPlatform:postgres,commerce_warehouse.public.{model},PROD)
-        # `or` rather than `.get(key, default)` deliberately: an empty-string
-        # env var (e.g. an unset GitHub Actions workflow_call input, which
-        # arrives as "" rather than absent) should fall back too, not format
-        # into a blank URN.
-        template = os.environ.get("BLAST_DATASET_URN_TEMPLATE") or "urn:li:dataset:(urn:li:dataPlatform:dbt,{model},PROD)"
-        return template.format(model=model_name)
+        """Mock-mode only -- reads the bundled fixture's changed-dataset URN
+        directly, since the demo fixture is keyed by model name. Real mode
+        resolves entities via search_entity() instead (see entity_resolver.py).
+        """
+        fixture = json.loads(self.mock_fixture.read_text())
+        return fixture["changed_dataset"]["urn"]
+
+    def search_entity(self, name: str, platform_hint: str | None = None) -> str | None:
+        """Find a DataHub entity by name (optionally narrowed by a platform
+        guess), MCP-first with a GraphQL fallback -- the datahub-search-skill
+        workflow entity_resolver.py builds on. Only returns a URN on an exact
+        (case-insensitive) name match, optionally also matching the platform
+        hint; never a fuzzy best-guess. Returns None if nothing confidently
+        matches.
+        """
+        if self.mode in ("auto", "mcp"):
+            try:
+                matches = search_entities_via_mcp(name, platform_hint)
+                return self._best_search_match(matches, name, platform_hint)
+            except MCPUnavailable as exc:
+                if self.mode == "mcp":
+                    raise
+                print(f"[blast] MCP search unavailable ({exc}), falling back to GraphQL")
+
+        matches = self._search_entity_graphql(name)
+        return self._best_search_match(matches, name, platform_hint)
+
+    @staticmethod
+    def _best_search_match(matches: list[dict], name: str, platform_hint: str | None) -> str | None:
+        for match in matches:
+            if match["name"].lower() != name.lower():
+                continue
+            if platform_hint and match["platform"].lower() != platform_hint.lower():
+                continue
+            return match["urn"]
+        return None
+
+    def _search_entity_graphql(self, name: str) -> list[dict]:
+        data = self._graphql(_SEARCH_QUERY, {"query": name})
+        results = ((data.get("search") or {}).get("searchResults")) or []
+
+        matches = []
+        for r in results:
+            entity = r.get("entity") or {}
+            platform = entity.get("platform")
+            platform_name = platform.get("name") if isinstance(platform, dict) else platform
+            urn = entity.get("urn")
+            if not urn:
+                continue
+            matches.append({"urn": urn, "name": entity.get("name") or urn, "platform": platform_name or "unknown"})
+        return matches
 
     def count_recent_incidents(self, dataset_urn: str, days: int = 90) -> int:
         """How many Blast-raised incidents this dataset has had in the last
@@ -238,6 +273,22 @@ query blastDownstreamLineage($urn: String!) {
             viewProperties { logic }
             ownership { owners { owner { ... on CorpUser { urn } } } }
           }
+        }
+      }
+    }
+  }
+}
+"""
+
+_SEARCH_QUERY = """
+query blastSearchEntity($query: String!) {
+  search(input: {type: DATASET, query: $query, start: 0, count: 10}) {
+    searchResults {
+      entity {
+        urn
+        ... on Dataset {
+          name
+          platform { name }
         }
       }
     }

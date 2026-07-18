@@ -11,8 +11,7 @@ name: Blast Scan (reusable)
 # consumer repo adds (it owns the pull_request trigger -- this reusable
 # workflow only owns the job). Blast now considers every changed file in
 # the PR, not just a fixed path -- see docs/architecture.md. Entity
-# resolution is configured per-repo via a .blast/entities.yml convention
-# file, not a workflow input.
+# resolution is DataHub search only, no per-repo config file needed.
 
 on:
   workflow_call:

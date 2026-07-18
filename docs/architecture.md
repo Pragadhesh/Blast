@@ -12,7 +12,7 @@ changed, for any format it can already read (which is most of them).
 agents/
 ├── _common/                    # shared by both agents
 │   ├── change_interpreter.py   # LLM: "what changed, and what DataHub entity is this?"
-│   ├── entity_resolver.py      # name+platform -> DataHub URN (convention config, then MCP search)
+│   ├── entity_resolver.py      # name+platform -> DataHub URN via search (MCP-first, GraphQL fallback)
 │   ├── datahub_client.py       # lineage reads (MCP-first, GraphQL fallback), incident read/write
 │   ├── mcp_datahub_client.py   # real DataHub MCP Server client: lineage + search
 │   ├── breakage_classifier.py  # LLM: does this downstream asset actually break?
@@ -37,7 +37,7 @@ agents/
 flowchart TD
     A["Changed file in a PR\n(path, old content, new content)"] --> B
     B["1. change_interpreter.py (LLM)\nWhat changed, and what DataHub\nentity does this file represent?"] --> C
-    C["2. entity_resolver.py\n.blast/entities.yml convention config first,\nDataHub search via MCP second -- never guesses"] --> D
+    C["2. entity_resolver.py\nDataHub search (MCP first, GraphQL fallback) --\nonly an exact name+platform match is trusted, never a guess"] --> D
     D["3. datahub_client.get_downstream_lineage(urn)\nMCP Server first, GraphQL fallback"] --> E
     E["4. breakage_classifier.py (LLM), per downstream asset\nhard_break / silent_risk / safe / needs_review"] --> F
     F["5. report_generator.py -> github_commenter.py\n-> datahub_client.write_incident"]
@@ -72,11 +72,12 @@ flowchart TD
   renamed). This is the module that makes Blast format-agnostic: no SQL
   parser, no HCL parser, no Tableau parser needed.
 
-- **`entity_resolver.py`** — resolves that name/platform to a DataHub URN.
-  Convention config (`.blast/entities.yml`) first -- explicit, deterministic,
-  reviewed by whoever owns the repo. DataHub search via MCP second, only
-  trusted on an exact name+platform match. Never silently guesses; skips
-  the file (logged) rather than resolving to the wrong entity.
+- **`entity_resolver.py`** — resolves that name/platform to a DataHub URN
+  purely via `datahub_client.search_entity()` (MCP first, GraphQL fallback)
+  -- no per-repo config file to maintain, so any repo works the same way
+  with zero setup. Only trusted on an exact name+platform match; never
+  silently guesses. Skips the file (logged) rather than resolving to the
+  wrong entity.
 
 - **`datahub_client.py` / `mcp_datahub_client.py`** — lineage reads try
   DataHub's **MCP Server** first (the preferred, DataHub-native
@@ -137,7 +138,7 @@ natively, against the MCP Server's tools directly:
 
 | Skill | Blast's equivalent |
 |---|---|
-| `datahub-search` | `entity_resolver.py`'s MCP search fallback |
+| `datahub-search` | `entity_resolver.py` / `datahub_client.search_entity()` |
 | `datahub-lineage` | `datahub_client.get_downstream_lineage()` |
 | `datahub-quality` | `count_recent_incidents()` / `write_incident()` (Incidents, today) |
 | `datahub-enrich` | not implemented -- structured properties/tags would be the more idiomatic write-back target than raw Incidents; roadmap |
@@ -163,17 +164,21 @@ useful complementary tool, just not something Blast's pipeline depends on.
   see the Skills table above. Today's write-back is DataHub Incidents,
   which is proven live; a "risk score" as a structured property is a
   documented next step, not a claim made now.
-- **Entity resolution depends on `.blast/entities.yml` or a confident
-  DataHub search match.** If a consumer repo doesn't maintain that config
-  and the LLM's guessed name/platform doesn't cleanly match anything in
-  DataHub, Blast skips the file (logged) rather than resolving to the
-  wrong entity. This is intentional -- a wrong URN produces a
-  confidently-wrong report, which is worse than no report.
+- **Entity resolution depends entirely on a confident DataHub search
+  match.** If the LLM's guessed name/platform doesn't cleanly match
+  anything in DataHub (a genuinely ambiguous name, or an entity DataHub
+  hasn't ingested), Blast skips the file (logged) rather than resolving to
+  the wrong entity. This is intentional -- a wrong URN produces a
+  confidently-wrong report, which is worse than no report. There's no
+  per-repo config file to fall back on anymore, which means the org's
+  DataHub instance genuinely needs to have ingested whatever's being
+  changed for Blast to say anything about it.
 - **S3 is a harder case than table-shaped platforms**: DataHub's `s3`
   source creates one dataset per file-group *within* a bucket, not one
   dataset for the bucket itself, so a bucket *rename* doesn't cleanly
-  resolve to a single URN via the convention-config path -- see the
-  comment in commerce-warehouse's `.blast/entities.yml`.
+  resolve to a single URN by name alone -- search would need to be paired
+  with knowing which of the bucket's per-file datasets are actually
+  affected, which isn't implemented.
 - **Splint locates source files by naming convention**
   (`models/**/{name}.sql`), since DataHub's lineage graph doesn't expose a
   downstream asset's source file path.

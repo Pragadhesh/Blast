@@ -4,10 +4,8 @@
 # secrets first (Settings -> Secrets and variables -> Actions).
 #
 # Blast considers every changed file in the PR, any format -- there's no
-# path filter to configure. To resolve a changed file to a DataHub entity,
-# add a .blast/entities.yml convention file to this repo (see
-# commerce-warehouse's for an example) or rely on DataHub search as a
-# fallback.
+# path filter to configure. Resolving a changed file to a DataHub entity is
+# handled entirely by DataHub search -- no per-repo config needed.
 #
 # `runs_on: self-hosted` below is set because commerce-warehouse's DataHub
 # instance is local-only and unreachable from GitHub-hosted runners. Delete
