@@ -39,3 +39,6 @@ Thumbs.db
 # logs / scratch
 *.log
 .cache/
+
+# video explainer project -- large media assets, not part of the submitted repo
+remotion/
