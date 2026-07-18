@@ -20,7 +20,7 @@ on:
 
 jobs:
   blast:
-    uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@main
+    uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@master
     with:
       runs_on: self-hosted
     secrets: inherit

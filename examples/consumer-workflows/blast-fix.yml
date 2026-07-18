@@ -16,7 +16,7 @@ on:
 jobs:
   splint:
     if: github.event.issue.pull_request && contains(github.event.comment.body, '/blast-fix')
-    uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@main
+    uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@master
     with:
       runs_on: self-hosted
     secrets: inherit

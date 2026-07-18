@@ -3,7 +3,7 @@ name: Blast Scan (reusable)
 # Called from any repo via:
 #   jobs:
 #     blast:
-#       uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@main
+#       uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@master
 #       with:
 #         runs_on: self-hosted   # only if DataHub isn't reachable from GitHub-hosted runners
 #       secrets: inherit
@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Pragadhesh/Blast
-          ref: main
+          ref: master
           path: .blast-agent
 
       - uses: actions/setup-python@v5
