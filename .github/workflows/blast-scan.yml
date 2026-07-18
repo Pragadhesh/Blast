@@ -6,12 +6,24 @@ name: Blast Scan (reusable)
 #       uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@master
 #       with:
 #         runs_on: self-hosted   # only if DataHub isn't reachable from GitHub-hosted runners
+#         setup_python: false    # skip actions/setup-python and use whatever's already on
+#                                # PATH -- see the note below on why this matters for
+#                                # self-hosted runners
 #       secrets: inherit
 # See examples/consumer-workflows/blast-scan.yml for the full wrapper a
 # consumer repo adds (it owns the pull_request trigger -- this reusable
 # workflow only owns the job). Blast now considers every changed file in
 # the PR, not just a fixed path -- see docs/architecture.md. Entity
 # resolution is DataHub search only, no per-repo config file needed.
+#
+# NOTE on setup_python: actions/setup-python tries to download and silently
+# run a Python installer when the requested version isn't already in its
+# tool cache. On a self-hosted runner that cache starts empty, and the
+# installer invocation is known to be flaky on Windows runners in
+# particular (fails with "'python-X.Y.Z-amd64.exe' is not recognized..."
+# even though the download succeeded). Self-hosted runners are BYO-environment
+# by nature -- if yours already has a working Python on PATH, set
+# setup_python: false and skip the whole problem instead of fighting it.
 
 on:
   workflow_call:
@@ -20,6 +32,14 @@ on:
         description: "Runner label. Use a self-hosted runner if DataHub isn't reachable from GitHub-hosted runners (e.g. a local-only instance)."
         type: string
         default: "ubuntu-latest"
+      setup_python:
+        description: "Whether to run actions/setup-python. Set false on a self-hosted runner that already has a working Python on PATH."
+        type: boolean
+        default: true
+      python_version:
+        description: "Python version for actions/setup-python (ignored if setup_python is false)."
+        type: string
+        default: "3.11"
     secrets:
       OPENAI_API_KEY:
         required: false
@@ -46,9 +66,10 @@ jobs:
           ref: master
           path: .blast-agent
 
-      - uses: actions/setup-python@v5
+      - if: inputs.setup_python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ inputs.python_version }}
 
       - name: Install Blast's dependencies
         run: pip install -r .blast-agent/requirements.txt
