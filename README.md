@@ -76,6 +76,16 @@ and `DATAHUB_TOKEN` — under **Settings → Secrets and variables → Actions**
 that Blast degrades gracefully without them (mock/offline modes), not for a
 real deployment.
 
+Splint needs one more repository setting, separate from the workflow's own
+`permissions:` block: under **Settings → Actions → General → Workflow
+permissions**, check **"Allow GitHub Actions to create and approve pull
+requests."** GitHub blocks the built-in `GITHUB_TOKEN` from opening pull
+requests by default, as an extra gate beyond the workflow-level
+`pull-requests: write` permission — without this repo setting, Splint's
+`create_pull()` call fails with `403: "GitHub Actions is not permitted to
+create or approve pull requests."` even though everything else is
+configured correctly.
+
 For the fully-commented versions of both files, with the reasoning behind
 every setting, see [`examples/consumer-workflows/`](examples/consumer-workflows/)
 — they reflect the exact configuration this project's own live demo repo

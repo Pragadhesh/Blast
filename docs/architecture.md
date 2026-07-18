@@ -214,6 +214,15 @@ of write the Skill formalizes," not "uses DataHub Skills."
 - **Splint on fork PRs**: comment-triggered workflows get a read-only
   `GITHUB_TOKEN` when the triggering PR is from a fork -- a GitHub platform
   restriction, not something `blast-fix.yml` can route around.
+- **Splint needs "Allow GitHub Actions to create and approve pull
+  requests" enabled** (Settings -> Actions -> General -> Workflow
+  permissions) on top of the workflow's own `pull-requests: write`. This
+  is a separate repo-level gate GitHub added specifically for PR creation
+  by `GITHUB_TOKEN`; without it, `pr_writer.py`'s `create_pull()` call
+  fails with a 403 ("GitHub Actions is not permitted to create or approve
+  pull requests") even though the workflow's declared permissions look
+  correct. Found live, not theoretical -- see README.md's "Add it to your
+  repo" section.
 - Classification (via the LLM) is only as good as the definition DataHub
   has on file for a downstream asset. An asset with no description/SQL/
   properties gets `needs_review`, honestly, rather than a guessed verdict.
