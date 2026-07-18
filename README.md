@@ -67,6 +67,40 @@ See [`docs/architecture.md`](docs/architecture.md) for the full pipeline
 diagrams (blast-scan and Splint), module-by-module design notes, and known
 limitations.
 
+## Splint: turning the warning into a fix
+
+Splint runs when someone comments `/blast-fix` on a PR blast-scan has
+already reported on. It doesn't re-read blast-scan's own comment — it
+re-runs the same interpret → resolve → lineage → classify pipeline fresh,
+then goes one step further for anything that isn't safe:
+
+```mermaid
+flowchart TD
+    A["/blast-fix comment on the PR"] --> B["Re-run interpret -> resolve -> lineage -> classify\n(same pipeline as blast-scan, fresh findings)"]
+    B --> C{"Verdict per\ndownstream asset"}
+    C -->|"safe"| D["Skip, no comment noise"]
+    C -->|"needs_review"| E["Skip -- Splint won't guess at\na fix for something it isn't\nconfident actually broke"]
+    C -->|"hard_break / silent_risk"| F["Locate the model's REAL source file\n(by naming convention, not DataHub's\ncompiled SQL -- that has no Jinja)"]
+    F -->|"not found"| G["Skip -- source file\ncouldn't be located"]
+    F -->|"found"| H["LLM rewrites the SQL\ngiven the specific change"]
+    H -->|"no-op rewrite"| I["Skip -- generated fix\nchanged nothing"]
+    H -->|"real fix"| J["Commit to a new branch\noff the PR's branch"]
+    J -->|"commit fails"| K["Skip -- commit failed,\nsee Action log"]
+    J -->|"commit succeeds"| L["Open a follow-up PR\ntargeting the original branch"]
+    L --> M["Comment on the original PR:\nwhat was fixed, and what wasn't (+ why)"]
+    M --> N["Write BLAST_FIX_PROPOSED\nback into DataHub"]
+```
+
+The comment Splint posts is always honest about partial results — it's
+never just "done" or "failed." If it fixes 2 of 3 flagged models, it opens
+the follow-up PR for those 2 and explicitly lists the third under **Not
+fixed automatically**, with a reason (`needs_review`, source file not
+found, fix was a no-op, or the commit itself failed). If it can't fix
+*anything*, it says so plainly and still lists why, rather than posting a
+generic failure with no detail. This mirrors the same honesty principle as
+blast-scan's `needs_review` verdict: an unclear "something happened" is
+worse than a specific "here's exactly what didn't get fixed and why."
+
 ## Quickstart — run the bundled demo (no infra required)
 
 This reproduces `examples/sample_pr_comment.md` exactly, using a mock

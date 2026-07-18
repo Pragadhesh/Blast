@@ -10,6 +10,12 @@ Jinja and can't be written back as a dbt model), asks an LLM to rewrite it,
 and opens a follow-up PR targeting the original PR's branch. Writes a note
 back to DataHub either way.
 
+Every finding it doesn't fix -- a needs_review verdict, a source file it
+couldn't locate, a fix that turned out to be a no-op, a commit that failed
+-- is tracked and reported on the PR by name and reason, not just logged.
+A partial success (2 of 3 models fixed) is reported as partial, not
+silently presented as if everything was handled.
+
 Run mode:
   python agents/splint/main.py   # reads GITHUB_REPOSITORY / GITHUB_PR_NUMBER /
                                   # GITHUB_TOKEN from the environment, as set by
@@ -69,6 +75,10 @@ def _merge_by_entity(interpreter, changed_files: list[tuple[str, str, str]]) -> 
     return merged
 
 
+def _format_skip_list(skipped: list[tuple[str, str]]) -> str:
+    return "\n".join(f"- `{name}`: {reason}" for name, reason in skipped)
+
+
 def main() -> None:
     repo_full_name = os.environ["GITHUB_REPOSITORY"]
     pr_number = int(os.environ["GITHUB_PR_NUMBER"])
@@ -96,58 +106,74 @@ def main() -> None:
     datahub = DataHubClient()
     classifier = get_breakage_classifier()
     fix_generator = get_fix_generator()
-    fixes: dict[str, str] = {}
+
+    fixes: dict[str, tuple[str, str]] = {}  # model_name -> (path, fixed_sql)
+    skipped: list[tuple[str, str]] = []  # (model_name, reason)
+    resolved_urns: dict[str, str] = {}  # entity_name -> urn, resolved once, reused for the DataHub write-back
 
     for interpreted in merged.values():
         urn = resolve_urn(interpreted, datahub)
         if urn is None:
+            skipped.append((interpreted.entity_name, "couldn't resolve this entity in DataHub"))
             continue
+        resolved_urns[interpreted.entity_name] = urn
 
         downstream = datahub.get_downstream_lineage(urn)
         findings = classifier.classify_all(interpreted.changes, downstream)
 
         for finding in findings:
+            name = finding.asset.name
+
             if finding.verdict == "safe":
                 continue
 
-            path = find_model_path(repo, ref=original_branch, model_name=finding.asset.name)
+            if finding.verdict == "needs_review":
+                skipped.append((name, "flagged needs_review -- not confident this actually broke, so no fix was attempted"))
+                continue
+
+            path = find_model_path(repo, ref=original_branch, model_name=name)
             if path is None:
-                print(f"Splint: couldn't locate a source file for {finding.asset.name} by convention, skipping")
+                skipped.append((name, "couldn't locate its source file by convention"))
                 continue
 
             original_sql = fetch_file(repo, path, ref=original_branch)
-            fixed_sql = fix_generator.generate_fix(
-                finding.asset.name, original_sql, interpreted.changes, finding.reasons
-            )
+            fixed_sql = fix_generator.generate_fix(name, original_sql, interpreted.changes, finding.reasons)
 
             if fixed_sql.strip() == original_sql.strip():
-                print(f"Splint: generated fix for {finding.asset.name} was a no-op, skipping")
+                skipped.append((name, "generated fix made no changes"))
                 continue
 
-            fixes[finding.asset.name] = fixed_sql
+            fixes[name] = (path, fixed_sql)
 
-    fix_pr_url = propose_fixes(repo, pr_number, original_branch, fixes)
+    fix_pr_url, commit_failures = propose_fixes(repo, pr_number, original_branch, fixes)
+    for name in commit_failures:
+        skipped.append((name, "fix was generated but the commit failed (see Action log)"))
+        fixes.pop(name, None)
 
     if fix_pr_url is None:
-        pr.create_issue_comment(
+        body = (
             "Splint looked at this PR's findings but couldn't generate a fix it was confident "
             "committing automatically -- some breaks need a human call."
         )
+        if skipped:
+            body += "\n\n" + _format_skip_list(skipped)
+        pr.create_issue_comment(body)
         return
 
-    pr.create_issue_comment(f"🩹 **Splint** opened a follow-up PR with proposed fixes: {fix_pr_url}")
+    fixed_names = [name for name in fixes if name not in commit_failures]
+    body = f"🩹 **Splint** opened a follow-up PR with proposed fixes for {len(fixed_names)} model(s): {fix_pr_url}"
+    if skipped:
+        body += "\n\n**Not fixed automatically:**\n" + _format_skip_list(skipped)
+    pr.create_issue_comment(body)
 
-    for interpreted in merged.values():
-        urn = resolve_urn(interpreted, datahub)
-        if urn is None:
-            continue
+    for entity_name, urn in resolved_urns.items():
         datahub.write_incident(
             dataset_urn=urn,
-            title=f"Splint proposed a fix for {interpreted.entity_name}",
+            title=f"Splint proposed a fix for {entity_name}",
             description=f"See {fix_pr_url}",
             custom_type="BLAST_FIX_PROPOSED",
         )
-    print(f"Splint: opened fix PR -> {fix_pr_url}")
+    print(f"Splint: opened fix PR -> {fix_pr_url} ({len(fixed_names)} fixed, {len(skipped)} skipped)")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-"""Turns a set of (model_name, fixed_sql) pairs into a follow-up PR targeting
-the original PR's branch, using the shared github_repo_client helpers.
+"""Turns a set of generated fixes into a follow-up PR targeting the
+original PR's branch, using the shared github_repo_client helpers.
 """
 
 from __future__ import annotations
@@ -10,10 +10,6 @@ from github import GithubException
 
 from github_repo_client import commit_file_change, open_branch, open_pull_request
 
-# Where a consumer repo's dbt models live, e.g. "dbt/models/" for
-# commerce-warehouse (its dbt project isn't at the repo root). Configurable
-# per-repo since this is a genuine convention DataHub's lineage doesn't
-# expose -- see docs/architecture.md's known limitations.
 _MODELS_ROOT = os.environ.get("BLAST_MODELS_ROOT", "models/")
 
 
@@ -42,35 +38,41 @@ def propose_fixes(
     repo,
     pr_number: int,
     original_branch: str,
-    fixes: dict[str, str],
-) -> str | None:
-    """Commits each (model_name -> fixed_sql) fix on a new branch off the
-    original PR's branch and opens a follow-up PR targeting it. Returns the
-    new PR's URL, or None if nothing was actually committed (e.g. every
-    model's source file couldn't be located by convention).
+    fixes: dict[str, tuple[str, str]],
+) -> tuple[str | None, list[str]]:
+    """fixes: model_name -> (path, fixed_sql), already resolved by the
+    caller (no re-lookup here -- avoids a redundant API call and a second
+    place the same lookup could diverge from the first).
+
+    Commits each fix on a new branch off the original PR's branch and opens
+    a follow-up PR targeting it. Returns (new PR's URL, or None if nothing
+    was committed; the list of model names whose commit failed despite
+    having a generated fix, so the caller can report them).
     """
     if not fixes:
-        return None
+        return None, []
 
     fix_branch = f"blast-fix/{original_branch}-{pr_number}"
     open_branch(repo, base_branch=original_branch, new_branch=fix_branch)
 
     committed = []
-    for model_name, fixed_sql in fixes.items():
-        path = find_model_path(repo, ref=original_branch, model_name=model_name)
-        if path is None:
-            continue
-        commit_file_change(
-            repo,
-            branch=fix_branch,
-            path=path,
-            new_content=fixed_sql,
-            message=f"Splint: fix {model_name} for the upstream schema change in #{pr_number}",
-        )
-        committed.append(model_name)
+    commit_failures = []
+    for model_name, (path, fixed_sql) in fixes.items():
+        try:
+            commit_file_change(
+                repo,
+                branch=fix_branch,
+                path=path,
+                new_content=fixed_sql,
+                message=f"Splint: fix {model_name} for the upstream schema change in #{pr_number}",
+            )
+            committed.append(model_name)
+        except GithubException as exc:
+            print(f"[blast] failed to commit fix for {model_name}: {exc}")
+            commit_failures.append(model_name)
 
     if not committed:
-        return None
+        return None, commit_failures
 
     body = (
         f"Generated fixes for {len(committed)} model(s) broken by #{pr_number}: "
@@ -84,4 +86,4 @@ def propose_fixes(
         head=fix_branch,
         base=original_branch,
     )
-    return pr.html_url
+    return pr.html_url, commit_failures
