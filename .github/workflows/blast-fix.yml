@@ -32,6 +32,10 @@ on:
         description: "Python version for actions/setup-python (ignored if setup_python is false)."
         type: string
         default: "3.11"
+      models_root:
+        description: "Where this repo's dbt models live, e.g. 'dbt/models/' if not at the repo root. DataHub's lineage doesn't expose source file paths, so Splint locates a model's file by this convention."
+        type: string
+        default: "models/"
     secrets:
       OPENAI_API_KEY:
         required: false
@@ -75,4 +79,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_PR_NUMBER: ${{ github.event.issue.number }}
+          BLAST_MODELS_ROOT: ${{ inputs.models_root }}
         run: python .blast-agent/agents/splint/main.py

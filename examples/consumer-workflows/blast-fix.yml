@@ -24,4 +24,6 @@ jobs:
     uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@master
     with:
       runs_on: self-hosted
+      models_root: "models/"   # e.g. "dbt/models/" if your dbt project isn't at the repo root --
+                                # Splint locates a broken model's source file by this convention
     secrets: inherit

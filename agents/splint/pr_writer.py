@@ -4,16 +4,31 @@ the original PR's branch, using the shared github_repo_client helpers.
 
 from __future__ import annotations
 
+import os
+
+from github import GithubException
+
 from github_repo_client import commit_file_change, open_branch, open_pull_request
 
+# Where a consumer repo's dbt models live, e.g. "dbt/models/" for
+# commerce-warehouse (its dbt project isn't at the repo root). Configurable
+# per-repo since this is a genuine convention DataHub's lineage doesn't
+# expose -- see docs/architecture.md's known limitations.
+_MODELS_ROOT = os.environ.get("BLAST_MODELS_ROOT", "models/")
 
-def find_model_path(repo, ref: str, model_name: str, models_root: str = "models/") -> str | None:
+
+def find_model_path(repo, ref: str, model_name: str, models_root: str = _MODELS_ROOT) -> str | None:
     """Locate a dbt model's source file by naming convention:
     {models_root}**/{model_name}.sql. DataHub's lineage doesn't expose
-    source file paths, so Splint relies on the same models/ convention the
-    rest of Blast assumes -- see docs/architecture.md's known limitations.
+    source file paths, so Splint relies on this convention -- see
+    docs/architecture.md's known limitations.
     """
-    stack = list(repo.get_contents(models_root, ref=ref))
+    try:
+        stack = list(repo.get_contents(models_root, ref=ref))
+    except GithubException as exc:
+        print(f"[blast] couldn't list '{models_root}' at {ref} ({exc.status}) -- check BLAST_MODELS_ROOT")
+        return None
+
     while stack:
         item = stack.pop()
         if item.type == "dir":
