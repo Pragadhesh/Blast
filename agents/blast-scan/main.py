@@ -1,5 +1,12 @@
 """Blast-scan: the schema-change risk agent.
 
+Considers every changed file in a PR, not just dbt models -- SQL DDL,
+Terraform, or anything else. change_interpreter.py (LLM-driven) decides
+per-file whether it's schema-relevant; this module doesn't pre-judge by
+file format, only by a cheap denylist of obviously-irrelevant extensions
+(docs, images, lockfiles) to avoid burning LLM calls on files that can
+never be a data asset definition.
+
 Run modes:
   python agents/blast-scan/main.py --demo   # bundled demo, no GitHub/DataHub needed
   python agents/blast-scan/main.py          # real mode: reads GITHUB_REPOSITORY / GITHUB_PR_NUMBER /
@@ -17,10 +24,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "agents" / "_common"))
 
+from breakage_classifier import Finding, get_breakage_classifier  # noqa: E402
+from change_interpreter import InterpretedChange, InterpretedFile, get_change_interpreter  # noqa: E402
 from datahub_client import DataHubClient  # noqa: E402
-from diff_parser import SchemaDiff, diff_dbt_file, merge_diffs  # noqa: E402
+from entity_resolver import resolve_urn  # noqa: E402
 from github_commenter import build_comment_body, post_or_update_comment  # noqa: E402
-from impact_simulator import Finding, simulate  # noqa: E402
 from report_generator import get_summarizer  # noqa: E402
 
 DEMO_BASE = REPO_ROOT / "examples" / "demo_dbt_project"
@@ -30,23 +38,68 @@ DEMO_CHANGED_FILES = [
     "models/staging/schema.yml",
 ]
 
-DBT_MODELS_PATH = os.environ.get("BLAST_DBT_MODELS_PATH", "models/")
+# Cost/latency guard, not a format allowlist: skip files that can never be
+# a data asset definition before even asking the LLM. Anything not listed
+# here (.sql, .tf, .yml, .py, .xml, unknown extensions, ...) still goes
+# through change_interpreter -- it decides relevance, not this list.
+_SKIP_EXTENSIONS = {".md", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".lock", ".pdf", ".woff", ".woff2"}
 
-PipelineResult = tuple[SchemaDiff, list[Finding], str, int]
+PipelineResult = tuple[str, list[InterpretedChange], list[Finding], str, int]
 
 
-def run_pipeline(model_diffs: list[SchemaDiff], datahub: DataHubClient) -> list[PipelineResult]:
-    summarizer = get_summarizer()
-    results: list[PipelineResult] = []
+def _merge_by_entity(changed_files: list[tuple[str, str, str]]) -> dict[str, InterpretedFile]:
+    """changed_files: list of (file_path, old_content, new_content). Runs
+    change_interpreter on each, merges changes by entity_name (so a PR
+    touching both a model's .sql and its schema.yml produces one entry,
+    not two), and drops files with no schema-relevant change.
+    """
+    interpreter = get_change_interpreter()
+    merged: dict[str, InterpretedFile] = {}
+    seen_per_entity: dict[str, set] = {}
 
-    for diff in model_diffs:
-        if diff.is_empty:
+    for file_path, old_content, new_content in changed_files:
+        if Path(file_path).suffix.lower() in _SKIP_EXTENSIONS:
             continue
 
-        urn = datahub.resolve_changed_dataset_urn(diff.model_name)
+        result = interpreter.interpret(file_path, old_content, new_content)
+        if result.is_empty:
+            print(f"Blast: no schema-relevant change detected in {file_path}, skipping")
+            continue
+
+        entity = result.entity_name
+        if entity not in merged:
+            merged[entity] = InterpretedFile(
+                file_path=file_path,
+                entity_name=entity,
+                platform_hint=result.platform_hint,
+                schema_hint=result.schema_hint,
+            )
+            seen_per_entity[entity] = set()
+
+        seen = seen_per_entity[entity]
+        for c in result.changes:
+            key = (c.kind, c.old, c.new)
+            if key not in seen:
+                seen.add(key)
+                merged[entity].changes.append(c)
+
+    return merged
+
+
+def run_pipeline(merged: dict[str, InterpretedFile], datahub: DataHubClient) -> list[PipelineResult]:
+    summarizer = get_summarizer()
+    classifier = get_breakage_classifier()
+    results: list[PipelineResult] = []
+
+    for entity_name, interpreted in merged.items():
+        urn = resolve_urn(interpreted, datahub)
+        if urn is None:
+            print(f"Blast: could not resolve '{entity_name}' to a DataHub entity, skipping")
+            continue
+
         downstream = datahub.get_downstream_lineage(urn)
-        findings = simulate(diff, downstream)
-        summary = summarizer.summarize(diff.model_name, diff, findings)
+        findings = classifier.classify_all(interpreted.changes, downstream)
+        summary = summarizer.summarize(entity_name, interpreted.changes, findings)
 
         history_count = 0
         if any(f.verdict != "safe" for f in findings):
@@ -56,14 +109,14 @@ def run_pipeline(model_diffs: list[SchemaDiff], datahub: DataHubClient) -> list[
             history_count = prior + 1
             datahub.write_incident(
                 dataset_urn=urn,
-                title=f"Blast: {diff.model_name} change broke {hard} and risked {risky} downstream model(s)",
+                title=f"Blast: {entity_name} change broke {hard} and risked {risky} downstream model(s)",
                 description=(
                     f"{summary}\n\nThis table has now triggered {history_count} Blast "
                     f"incident(s) in the last 90 days."
                 ),
             )
 
-        results.append((diff, findings, summary, history_count))
+        results.append((entity_name, interpreted.changes, findings, summary, history_count))
 
     return results
 
@@ -72,22 +125,21 @@ def run_demo() -> None:
     os.environ.setdefault("BLAST_MOCK_DATAHUB", "1")
     os.environ.setdefault("BLAST_MOCK_LLM", "1")
 
-    diffs: list[SchemaDiff] = []
-    for rel_path in DEMO_CHANGED_FILES:
-        old_content = (DEMO_BASE / rel_path).read_text()
-        new_content = (DEMO_PR / rel_path).read_text()
-        diffs.extend(diff_dbt_file(rel_path, old_content, new_content))
-    merged = merge_diffs(diffs)
+    changed_files = [
+        (rel_path, (DEMO_BASE / rel_path).read_text(), (DEMO_PR / rel_path).read_text())
+        for rel_path in DEMO_CHANGED_FILES
+    ]
+    merged = _merge_by_entity(changed_files)
 
     datahub = DataHubClient()
     results = run_pipeline(merged, datahub)
 
     if not results:
-        print("No dbt schema changes detected in the demo scenario.")
+        print("No schema-relevant changes detected in the demo scenario.")
         return
 
-    for diff, findings, summary, history_count in results:
-        print(build_comment_body(diff.model_name, diff, findings, summary, history_count))
+    for entity_name, _changes, findings, summary, history_count in results:
+        print(build_comment_body(entity_name, findings, summary, history_count))
         print("\n" + "=" * 80 + "\n")
 
 
@@ -102,32 +154,34 @@ def run_real() -> None:
     repo = gh.get_repo(repo_full_name)
     pr = repo.get_pull(pr_number)
 
-    diffs: list[SchemaDiff] = []
+    changed_files: list[tuple[str, str, str]] = []
     for f in pr.get_files():
-        if f.status not in ("modified", "renamed"):
-            continue
-        if not f.filename.startswith(DBT_MODELS_PATH):
-            continue
-        if not f.filename.endswith((".sql", ".yml", ".yaml")):
+        if f.status not in ("modified", "renamed", "added", "removed"):
             continue
 
-        old_path = getattr(f, "previous_filename", None) or f.filename
-        old_content = repo.get_contents(old_path, ref=pr.base.sha).decoded_content.decode()
-        new_content = repo.get_contents(f.filename, ref=pr.head.sha).decoded_content.decode()
-        diffs.extend(diff_dbt_file(f.filename, old_content, new_content))
+        old_content = ""
+        if f.status != "added":
+            old_path = getattr(f, "previous_filename", None) or f.filename
+            old_content = repo.get_contents(old_path, ref=pr.base.sha).decoded_content.decode()
 
-    merged = merge_diffs(diffs)
+        new_content = ""
+        if f.status != "removed":
+            new_content = repo.get_contents(f.filename, ref=pr.head.sha).decoded_content.decode()
+
+        changed_files.append((f.filename, old_content, new_content))
+
+    merged = _merge_by_entity(changed_files)
     if not merged:
-        print("Blast: no dbt schema/model changes detected in this PR.")
+        print("Blast: no schema-relevant changes detected in this PR.")
         return
 
     datahub = DataHubClient()
     results = run_pipeline(merged, datahub)
 
-    for diff, findings, summary, history_count in results:
-        body = build_comment_body(diff.model_name, diff, findings, summary, history_count)
-        url = post_or_update_comment(repo_full_name, pr_number, diff.model_name, body, token)
-        print(f"Posted Blast report for `{diff.model_name}` -> {url}")
+    for entity_name, _changes, findings, summary, history_count in results:
+        body = build_comment_body(entity_name, findings, summary, history_count)
+        url = post_or_update_comment(repo_full_name, pr_number, entity_name, body, token)
+        print(f"Posted Blast report for `{entity_name}` -> {url}")
 
 
 def main() -> None:

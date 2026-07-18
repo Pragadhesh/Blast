@@ -2,12 +2,13 @@
 
 Triggered by a `/blast-fix` comment on a PR that blast-scan has already
 reported on (see .github/workflows/blast-fix.yml). Re-runs the same
-diff -> lineage -> classify pipeline blast-scan uses (via agents/_common) to
-get fresh findings -- not a fragile re-parse of Blast's own past comment
-text -- fetches each broken downstream model's *real* source file (not
-DataHub's compiled view SQL, which has no Jinja and can't be written back
-as a dbt model), asks an LLM to rewrite it, and opens a follow-up PR
-targeting the original PR's branch. Writes a note back to DataHub either way.
+change_interpreter -> entity_resolver -> lineage -> classify pipeline
+blast-scan uses (via agents/_common) to get fresh findings -- not a fragile
+re-parse of Blast's own past comment text -- fetches each broken downstream
+model's *real* source file (not DataHub's compiled view SQL, which has no
+Jinja and can't be written back as a dbt model), asks an LLM to rewrite it,
+and opens a follow-up PR targeting the original PR's branch. Writes a note
+back to DataHub either way.
 
 Run mode:
   python agents/splint/main.py   # reads GITHUB_REPOSITORY / GITHUB_PR_NUMBER /
@@ -25,15 +26,47 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "agents" / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from breakage_classifier import get_breakage_classifier  # noqa: E402
+from change_interpreter import InterpretedFile, get_change_interpreter  # noqa: E402
 from datahub_client import DataHubClient  # noqa: E402
-from diff_parser import diff_dbt_file, merge_diffs  # noqa: E402
+from entity_resolver import resolve_urn  # noqa: E402
 from github_repo_client import fetch_file, get_repo  # noqa: E402
-from impact_simulator import simulate  # noqa: E402
 
 from fix_generator import get_fix_generator  # noqa: E402
 from pr_writer import find_model_path, propose_fixes  # noqa: E402
 
-DBT_MODELS_PATH = os.environ.get("BLAST_DBT_MODELS_PATH", "models/")
+_SKIP_EXTENSIONS = {".md", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".lock", ".pdf", ".woff", ".woff2"}
+
+
+def _merge_by_entity(interpreter, changed_files: list[tuple[str, str, str]]) -> dict[str, InterpretedFile]:
+    merged: dict[str, InterpretedFile] = {}
+    seen_per_entity: dict[str, set] = {}
+
+    for file_path, old_content, new_content in changed_files:
+        if Path(file_path).suffix.lower() in _SKIP_EXTENSIONS:
+            continue
+        result = interpreter.interpret(file_path, old_content, new_content)
+        if result.is_empty:
+            continue
+
+        entity = result.entity_name
+        if entity not in merged:
+            merged[entity] = InterpretedFile(
+                file_path=file_path,
+                entity_name=entity,
+                platform_hint=result.platform_hint,
+                schema_hint=result.schema_hint,
+            )
+            seen_per_entity[entity] = set()
+
+        seen = seen_per_entity[entity]
+        for c in result.changes:
+            key = (c.kind, c.old, c.new)
+            if key not in seen:
+                seen.add(key)
+                merged[entity].changes.append(c)
+
+    return merged
 
 
 def main() -> None:
@@ -45,30 +78,33 @@ def main() -> None:
     pr = repo.get_pull(pr_number)
     original_branch = pr.head.ref
 
-    diffs = []
+    changed_files: list[tuple[str, str, str]] = []
     for f in pr.get_files():
         if f.status not in ("modified", "renamed"):
-            continue
-        if not f.filename.startswith(DBT_MODELS_PATH) or not f.filename.endswith((".sql", ".yml", ".yaml")):
             continue
         old_path = getattr(f, "previous_filename", None) or f.filename
         old_content = repo.get_contents(old_path, ref=pr.base.sha).decoded_content.decode()
         new_content = repo.get_contents(f.filename, ref=pr.head.sha).decoded_content.decode()
-        diffs.extend(diff_dbt_file(f.filename, old_content, new_content))
+        changed_files.append((f.filename, old_content, new_content))
 
-    merged = merge_diffs(diffs)
+    interpreter = get_change_interpreter()
+    merged = _merge_by_entity(interpreter, changed_files)
     if not merged:
-        pr.create_issue_comment("Splint: no dbt schema/model changes detected in this PR, nothing to fix.")
+        pr.create_issue_comment("Splint: no schema-relevant changes detected in this PR, nothing to fix.")
         return
 
     datahub = DataHubClient()
+    classifier = get_breakage_classifier()
     fix_generator = get_fix_generator()
     fixes: dict[str, str] = {}
 
-    for diff in merged:
-        urn = datahub.resolve_changed_dataset_urn(diff.model_name)
+    for interpreted in merged.values():
+        urn = resolve_urn(interpreted, datahub)
+        if urn is None:
+            continue
+
         downstream = datahub.get_downstream_lineage(urn)
-        findings = simulate(diff, downstream)
+        findings = classifier.classify_all(interpreted.changes, downstream)
 
         for finding in findings:
             if finding.verdict == "safe":
@@ -80,9 +116,9 @@ def main() -> None:
                 continue
 
             original_sql = fetch_file(repo, path, ref=original_branch)
-            changes = [r.change for r in finding.reasons]
-            reasons = [r.detail for r in finding.reasons]
-            fixed_sql = fix_generator.generate_fix(finding.asset.name, original_sql, changes, reasons)
+            fixed_sql = fix_generator.generate_fix(
+                finding.asset.name, original_sql, interpreted.changes, finding.reasons
+            )
 
             if fixed_sql.strip() == original_sql.strip():
                 print(f"Splint: generated fix for {finding.asset.name} was a no-op, skipping")
@@ -101,11 +137,13 @@ def main() -> None:
 
     pr.create_issue_comment(f"🩹 **Splint** opened a follow-up PR with proposed fixes: {fix_pr_url}")
 
-    for diff in merged:
-        urn = datahub.resolve_changed_dataset_urn(diff.model_name)
+    for interpreted in merged.values():
+        urn = resolve_urn(interpreted, datahub)
+        if urn is None:
+            continue
         datahub.write_incident(
             dataset_urn=urn,
-            title=f"Splint proposed a fix for {diff.model_name}",
+            title=f"Splint proposed a fix for {interpreted.entity_name}",
             description=f"See {fix_pr_url}",
             custom_type="BLAST_FIX_PROPOSED",
         )

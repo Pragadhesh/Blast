@@ -8,30 +8,39 @@ from __future__ import annotations
 
 from github import Github
 
-from diff_parser import SchemaDiff
+from breakage_classifier import VERDICT_RANK, Finding
 from graph_renderer import render_mermaid
-from impact_simulator import VERDICT_RANK, Finding
 
 
 def _marker(model_name: str) -> str:
     return f"<!-- blast-report:{model_name} -->"
 
 
+def _owner_display(owner_urn: str) -> str:
+    # e.g. "urn:li:corpuser:data-eng" -> "data-eng". Displayed as plain
+    # text, not a GitHub @mention -- a DataHub owner identifier isn't
+    # guaranteed to be a valid GitHub handle, and pinging one live could
+    # notify the wrong person.
+    return owner_urn.rsplit(":", 1)[-1]
+
+
 def build_comment_body(
     model_name: str,
-    diff: SchemaDiff,
     findings: list[Finding],
     summary: str,
     history_count: int = 0,
 ) -> str:
     hard = [f for f in findings if f.verdict == "hard_break"]
     risky = [f for f in findings if f.verdict == "silent_risk"]
+    review = [f for f in findings if f.verdict == "needs_review"]
 
     headline_parts = []
     if hard:
         headline_parts.append(f"{len(hard)} breaking change{'s' if len(hard) != 1 else ''}")
     if risky:
         headline_parts.append(f"{len(risky)} silent risk{'s' if len(risky) != 1 else ''}")
+    if review:
+        headline_parts.append(f"{len(review)} needing review")
     headline = " and ".join(headline_parts) if headline_parts else "no downstream breakage"
 
     lines = [
@@ -46,6 +55,13 @@ def build_comment_body(
             f"\n📜 **Institutional memory:** `{model_name}` has now triggered "
             f"{history_count} Blast incidents in the last 90 days -- this isn't a one-off."
         )
+
+    owned_findings = [f for f in findings if f.verdict != "safe" and f.asset.owners]
+    if owned_findings:
+        owner_lines = ", ".join(
+            f"`{f.asset.name}` ({', '.join(_owner_display(o) for o in f.asset.owners)})" for f in owned_findings
+        )
+        lines.append(f"\n👤 **Owners to loop in:** {owner_lines}")
 
     lines += [
         "",
@@ -63,8 +79,8 @@ def build_comment_body(
             if not f.reasons:
                 continue
             lines.append(f"- {f.emoji} **`{f.asset.name}`**")
-            for r in f.reasons:
-                lines.append(f"  - {r.detail}")
+            for reason in f.reasons:
+                lines.append(f"  - {reason}")
 
     lines += ["", "#### Dependency graph", "", render_mermaid(model_name, findings)]
 

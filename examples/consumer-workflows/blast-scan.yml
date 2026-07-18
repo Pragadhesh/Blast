@@ -3,26 +3,26 @@
 # install. Add OPENAI_API_KEY, DATAHUB_SERVER, DATAHUB_TOKEN as repository
 # secrets first (Settings -> Secrets and variables -> Actions).
 #
-# The `with:` block below is set for commerce-warehouse specifically (dbt
-# project under dbt/, ingested via the postgres source -- see its README).
-# Delete it entirely if your repo has dbt at the root and ingests via dbt
-# itself; those are Blast's defaults.
+# Blast considers every changed file in the PR, any format -- there's no
+# path filter to configure. To resolve a changed file to a DataHub entity,
+# add a .blast/entities.yml convention file to this repo (see
+# commerce-warehouse's for an example) or rely on DataHub search as a
+# fallback.
+#
+# `runs_on: self-hosted` below is set because commerce-warehouse's DataHub
+# instance is local-only and unreachable from GitHub-hosted runners. Delete
+# that line (falls back to ubuntu-latest) if your DataHub is reachable from
+# GitHub's cloud runners.
 
 name: Blast
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
-    paths:
-      - "dbt/models/**/*.sql"
-      - "dbt/models/**/*.yml"
-      - "dbt/models/**/*.yaml"
 
 jobs:
   blast:
     uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@main
     with:
-      dbt_models_path: "dbt/models/"
-      dataset_urn_template: "urn:li:dataset:(urn:li:dataPlatform:postgres,commerce_warehouse.public.{model},PROD)"
       runs_on: self-hosted
     secrets: inherit

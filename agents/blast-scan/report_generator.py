@@ -12,8 +12,8 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 
-from diff_parser import SchemaDiff
-from impact_simulator import Finding
+from breakage_classifier import Finding
+from change_interpreter import InterpretedChange
 
 _PROMPT_TEMPLATE = """You are Blast, a CI bot that reviews dbt schema changes for breaking downstream impact.
 
@@ -30,31 +30,27 @@ update the downstream model, or coordinate with the owning team) if there is at 
 Do not use markdown headers. Keep it tight."""
 
 
-def _render_prompt(model_name: str, diff: SchemaDiff, findings: list[Finding]) -> str:
-    changes = "\n".join(f"- {c}" for c in diff.changes) or "(none)"
+def _render_prompt(model_name: str, changes: list[InterpretedChange], findings: list[Finding]) -> str:
+    changes_text = "\n".join(f"- {c}" for c in changes) or "(none)"
     findings_text = (
-        "\n".join(
-            f"- {f.emoji} {f.asset.name} ({f.verdict}): " + "; ".join(r.detail for r in f.reasons)
-            for f in findings
-        )
-        or "(none)"
+        "\n".join(f"- {f.emoji} {f.asset.name} ({f.verdict}): " + "; ".join(f.reasons) for f in findings) or "(none)"
     )
-    return _PROMPT_TEMPLATE.format(model_name=model_name, changes=changes, findings=findings_text)
+    return _PROMPT_TEMPLATE.format(model_name=model_name, changes=changes_text, findings=findings_text)
 
 
 class Summarizer(ABC):
     @abstractmethod
-    def summarize(self, model_name: str, diff: SchemaDiff, findings: list[Finding]) -> str: ...
+    def summarize(self, model_name: str, changes: list[InterpretedChange], findings: list[Finding]) -> str: ...
 
 
 class MockSummarizer(Summarizer):
     """Deterministic, no-network summary -- used in tests/dev to avoid burning API budget."""
 
-    def summarize(self, model_name: str, diff: SchemaDiff, findings: list[Finding]) -> str:
+    def summarize(self, model_name: str, changes: list[InterpretedChange], findings: list[Finding]) -> str:
         hard = [f for f in findings if f.verdict == "hard_break"]
         risky = [f for f in findings if f.verdict == "silent_risk"]
 
-        change_desc = ", ".join(str(c) for c in diff.changes) or "no column changes"
+        change_desc = ", ".join(str(c) for c in changes) or "no schema changes"
         lines = [f"Changing `{model_name}` ({change_desc}) affects {len(findings)} downstream model(s)."]
         if hard:
             lines.append(f"{len(hard)} will break outright: " + ", ".join(f.asset.name for f in hard) + ".")
@@ -72,10 +68,10 @@ class OpenAISummarizer(Summarizer):
         self._client = OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
         self._model = model
 
-    def summarize(self, model_name: str, diff: SchemaDiff, findings: list[Finding]) -> str:
+    def summarize(self, model_name: str, changes: list[InterpretedChange], findings: list[Finding]) -> str:
         response = self._client.chat.completions.create(
             model=self._model,
-            messages=[{"role": "user", "content": _render_prompt(model_name, diff, findings)}],
+            messages=[{"role": "user", "content": _render_prompt(model_name, changes, findings)}],
             temperature=0.2,
             max_tokens=300,
         )
@@ -89,12 +85,12 @@ class OllamaSummarizer(Summarizer):
         self._model = model
         self._host = (host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
 
-    def summarize(self, model_name: str, diff: SchemaDiff, findings: list[Finding]) -> str:
+    def summarize(self, model_name: str, changes: list[InterpretedChange], findings: list[Finding]) -> str:
         import requests
 
         resp = requests.post(
             f"{self._host}/api/generate",
-            json={"model": self._model, "prompt": _render_prompt(model_name, diff, findings), "stream": False},
+            json={"model": self._model, "prompt": _render_prompt(model_name, changes, findings), "stream": False},
             timeout=60,
         )
         resp.raise_for_status()

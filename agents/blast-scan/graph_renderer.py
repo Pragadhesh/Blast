@@ -4,16 +4,17 @@ hosting (see CLAUDE.md section 6)."""
 
 from __future__ import annotations
 
-from impact_simulator import Finding
+from breakage_classifier import Finding
 
 _STYLE = {
     "hard_break": "fill:#ffdce0,stroke:#d1242f,stroke-width:2px,color:#1f2328",
     "silent_risk": "fill:#fff8c5,stroke:#9a6700,stroke-width:2px,color:#1f2328",
     "safe": "fill:#dafbe1,stroke:#1a7f37,stroke-width:2px,color:#1f2328",
+    "needs_review": "fill:#ffe5b4,stroke:#bc4c00,stroke-width:2px,color:#1f2328",
     "changed": "fill:#d0d7ff,stroke:#4c2889,stroke-width:2px,color:#1f2328",
 }
 
-_LABEL = {"hard_break": "hard break", "silent_risk": "silent risk", "safe": "safe"}
+_LABEL = {"hard_break": "hard break", "silent_risk": "silent risk", "safe": "safe", "needs_review": "needs review"}
 
 
 def _node_id(name: str) -> str:

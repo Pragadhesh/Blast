@@ -2,8 +2,8 @@
 prior incidents, and write Blast's findings back as a DataHub Incident (the
 "institutional memory" differentiator described in CLAUDE.md section 4).
 
-Lineage reads try DataHub's MCP Server first (mcp_lineage_client.py -- the
-hackathon-preferred integration surface), then fall back automatically to
+Lineage reads try DataHub's MCP Server first (mcp_datahub_client.py -- the
+preferred, DataHub-native integration surface), then fall back automatically to
 this module's own GraphQL client if the MCP path isn't available or its
 result can't be confidently parsed. Control this with BLAST_DATAHUB_MODE:
   auto (default) -- try MCP, fall back to GraphQL
@@ -29,7 +29,7 @@ from typing import Any
 
 import requests
 
-from mcp_lineage_client import MCPUnavailable, get_downstream_lineage_via_mcp
+from mcp_datahub_client import MCPUnavailable, get_downstream_lineage_via_mcp
 
 DEFAULT_FIXTURE = (
     Path(__file__).resolve().parent.parent.parent / "examples" / "demo_dbt_project" / "lineage_fixture.json"

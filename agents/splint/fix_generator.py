@@ -10,7 +10,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 
-from diff_parser import ColumnChange
+from change_interpreter import InterpretedChange
 
 _PROMPT_TEMPLATE = """You are Splint, a CI bot that repairs dbt models broken by an upstream schema change.
 
@@ -32,7 +32,7 @@ Do not touch dbt Jinja macros like {{{{ ref(...) }}}} or {{{{ source(...) }}}}.
 Return ONLY the corrected SQL. No explanation, no markdown code fences."""
 
 
-def _render_prompt(model_name: str, sql: str, changes: list[ColumnChange], reasons: list[str]) -> str:
+def _render_prompt(model_name: str, sql: str, changes: list[InterpretedChange], reasons: list[str]) -> str:
     changes_text = "\n".join(f"- {c}" for c in changes) or "(none)"
     reasons_text = "\n".join(f"- {r}" for r in reasons) or "(none)"
     return _PROMPT_TEMPLATE.format(model_name=model_name, sql=sql, changes=changes_text, reasons=reasons_text)
@@ -40,7 +40,7 @@ def _render_prompt(model_name: str, sql: str, changes: list[ColumnChange], reaso
 
 class FixGenerator(ABC):
     @abstractmethod
-    def generate_fix(self, model_name: str, sql: str, changes: list[ColumnChange], reasons: list[str]) -> str: ...
+    def generate_fix(self, model_name: str, sql: str, changes: list[InterpretedChange], reasons: list[str]) -> str: ...
 
 
 class MockFixGenerator(FixGenerator):
@@ -51,11 +51,11 @@ class MockFixGenerator(FixGenerator):
     to run with no model behind it.
     """
 
-    def generate_fix(self, model_name: str, sql: str, changes: list[ColumnChange], reasons: list[str]) -> str:
+    def generate_fix(self, model_name: str, sql: str, changes: list[InterpretedChange], reasons: list[str]) -> str:
         fixed = sql
         for change in changes:
-            if change.kind == "renamed" and change.renamed_to:
-                fixed = re.sub(rf"\b{re.escape(change.column)}\b", change.renamed_to, fixed)
+            if change.kind == "renamed" and change.old and change.new:
+                fixed = re.sub(rf"\b{re.escape(change.old)}\b", change.new, fixed)
         return fixed
 
 
@@ -66,7 +66,7 @@ class OpenAIFixGenerator(FixGenerator):
         self._client = OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
         self._model = model
 
-    def generate_fix(self, model_name: str, sql: str, changes: list[ColumnChange], reasons: list[str]) -> str:
+    def generate_fix(self, model_name: str, sql: str, changes: list[InterpretedChange], reasons: list[str]) -> str:
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[{"role": "user", "content": _render_prompt(model_name, sql, changes, reasons)}],

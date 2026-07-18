@@ -1,5 +1,14 @@
 """Classifies whether a downstream dbt model's SQL would actually break from a
 SchemaDiff -- not just "it's connected in lineage" (see CLAUDE.md section 4).
+
+Only used as part of the mock (BLAST_MOCK_LLM=1) backend of
+breakage_classifier.py's MockBreakageClassifier now, for the column-shaped
+(dbt-style) case specifically -- deterministic and free, good enough to
+replay the bundled demo offline. The production path
+(breakage_classifier.py's OpenAIBreakageClassifier) doesn't use this
+module: it asks the LLM to reason about the downstream asset's definition
+directly, which generalizes to non-SQL downstream assets this AST scanner
+was never meant to handle. See docs/architecture.md.
 """
 
 from __future__ import annotations

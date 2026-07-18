@@ -1,193 +1,185 @@
 # Blast Architecture
 
-Two agents, sharing one library.
+Two agents, sharing one library, built around one idea: **don't hand-write
+a parser per file format.** An earlier version of Blast only understood
+dbt-model-shaped SQL (via sqlglot). That doesn't scale to "works across an
+entire org" -- the next team's Terraform, Tableau config, or Airflow DAG
+would each need a new detector, forever one step behind whatever the org
+actually uses. Instead, an LLM reads the raw diff and describes what
+changed, for any format it can already read (which is most of them).
 
 ```
 agents/
-├── _common/              # shared by both agents
-│   ├── diff_parser.py
-│   ├── sql_utils.py
-│   ├── datahub_client.py      # MCP-first lineage reads, GraphQL fallback, incident read/write
-│   ├── mcp_lineage_client.py  # real DataHub MCP Server client
-│   ├── impact_simulator.py    # sqlglot-based breakage classification
-│   └── github_repo_client.py  # branch / commit / PR helpers (Splint only)
-├── blast-scan/            # reads a PR, reports risk
+├── _common/                    # shared by both agents
+│   ├── change_interpreter.py   # LLM: "what changed, and what DataHub entity is this?"
+│   ├── entity_resolver.py      # name+platform -> DataHub URN (convention config, then MCP search)
+│   ├── datahub_client.py       # lineage reads (MCP-first, GraphQL fallback), incident read/write
+│   ├── mcp_datahub_client.py   # real DataHub MCP Server client: lineage + search
+│   ├── breakage_classifier.py  # LLM: does this downstream asset actually break?
+│   ├── github_repo_client.py   # branch / commit / PR helpers (Splint only)
+│   ├── diff_parser.py          # sqlglot/YAML diffing -- now only the mock backend, see below
+│   ├── impact_simulator.py     # AST column-reference scan -- now only the mock backend, see below
+│   └── sql_utils.py
+├── blast-scan/                  # reads a PR, reports risk
 │   ├── main.py
-│   ├── report_generator.py
-│   ├── graph_renderer.py
-│   └── github_commenter.py
-└── splint/                 # /blast-fix: proposes a fix as a follow-up PR
+│   ├── report_generator.py     # OpenAI summary (gpt-4o-mini)
+│   ├── graph_renderer.py       # Mermaid generation
+│   └── github_commenter.py     # posts PR comment
+└── splint/                      # /blast-fix: proposes a fix as a follow-up PR
     ├── main.py
-    ├── fix_generator.py
+    ├── fix_generator.py         # OpenAI SQL fix (gpt-4o-mini)
     └── pr_writer.py
 ```
 
-## blast-scan pipeline
+## Pipeline (per changed file, any format)
 
-```
-GitHub PR (schema/dbt change)
-        │
-        ▼
-.github/workflows/blast-scan.yml ──► agents/blast-scan/main.py
-        │
-        ├─ 1. diff_parser.py       old vs new model/schema.yml → SchemaDiff (per model)
-        ├─ 2. datahub_client.py    downstream lineage for the changed dataset (MCP-first, GraphQL fallback)
-        ├─ 3. impact_simulator.py  sqlglot classification: 🔴 hard break / 🟡 silent risk / 🟢 safe
-        ├─ 4. datahub_client.py    count prior Blast incidents on the dataset (90-day window)
-        ├─ 5. report_generator.py  plain-English summary (gpt-4o-mini, mockable)
-        ├─ 6. graph_renderer.py    color-coded Mermaid graph
-        ├─ 7. github_commenter.py  post/update the PR comment (includes the incident-history line)
-        └─ 8. datahub_client.py    write an Incident back onto the changed dataset
+```mermaid
+flowchart TD
+    A["Changed file in a PR\n(path, old content, new content)"] --> B
+    B["1. change_interpreter.py (LLM)\nWhat changed, and what DataHub\nentity does this file represent?"] --> C
+    C["2. entity_resolver.py\n.blast/entities.yml convention config first,\nDataHub search via MCP second -- never guesses"] --> D
+    D["3. datahub_client.get_downstream_lineage(urn)\nMCP Server first, GraphQL fallback"] --> E
+    E["4. breakage_classifier.py (LLM), per downstream asset\nhard_break / silent_risk / safe / needs_review"] --> F
+    F["5. report_generator.py -> github_commenter.py\n-> datahub_client.write_incident"]
 ```
 
-`agents/blast-scan/main.py` is the only entrypoint; every other module is a
-pure function/class with no I/O side effects beyond its own documented job.
+`agents/blast-scan/main.py` runs this for every changed file in a PR (a
+cheap extension-based denylist skips obviously-irrelevant files like images
+or lockfiles before even calling the LLM -- not a format allowlist).
+Files change_interpreter finds nothing schema-relevant in are skipped
+silently, not treated as errors -- this is what makes the scan behave like
+a whole-repo static-analysis tool instead of a narrow dbt-only one.
 
 ## Splint pipeline (`/blast-fix`)
 
+```mermaid
+flowchart TD
+    A["PR comment: /blast-fix"] --> B[".github/workflows/blast-fix.yml\n-> agents/splint/main.py"]
+    B --> C["1-4. Same steps as blast-scan, re-run fresh\n(not a re-parse of Blast's own past comment)"]
+    C --> D["5. Fetch each broken downstream model's REAL source file\nvia github_repo_client.py -- not DataHub's compiled\ndefinition, which has no Jinja and would corrupt a dbt model"]
+    D --> E["6. fix_generator.py (LLM) rewrites the SQL"]
+    E --> F["7. pr_writer.py opens a follow-up PR\ntargeting the original PR's branch"]
+    F --> G["8. Comments on the original PR,\nwrites a note to DataHub (BLAST_FIX_PROPOSED)"]
 ```
-PR comment "/blast-fix"
-        │
-        ▼
-.github/workflows/blast-fix.yml ──► agents/splint/main.py
-        │
-        ├─ 1-3. Same diff → lineage → classify steps as blast-scan (re-run fresh,
-        │        not a re-parse of Blast's own past comment -- more reliable)
-        ├─ 4. github_repo_client.py  fetch each broken model's REAL source file
-        │       (not DataHub's compiled view SQL -- that has no Jinja and would
-        │        corrupt the dbt model if written back verbatim)
-        ├─ 5. fix_generator.py       LLM rewrites the SQL given the specific
-        │       ColumnChange(s) and classification reason(s)
-        ├─ 6. pr_writer.py           branch off the original PR's branch, commit
-        │       each fix, open a follow-up PR targeting it
-        ├─ 7. Comment back on the original PR linking the fix PR
-        └─ 8. datahub_client.py      write a note back to DataHub (custom_type
-                BLAST_FIX_PROPOSED) so the fix attempt is part of the dataset's history too
-```
-
-Splint locates a downstream model's source file by the same `models/**/{name}.sql`
-convention the rest of Blast assumes (DataHub's lineage graph doesn't expose
-source file paths) -- see "Known limitations" below.
 
 ## Module responsibilities
 
-- **`diff_parser.py`** — turns a before/after pair of file contents into a
-  `SchemaDiff` (a list of `ColumnChange`: `dropped` / `added` / `renamed` /
-  `type_changed`). Two independent code paths feed the same `SchemaDiff` shape:
-  - `.sql` model bodies, via `sqlglot` — parses the `SELECT` list of both
-    versions and diffs the output column names. A `renamed` change is detected
-    when a newly-added column's expression is a bare reference to a
-    newly-dropped column (`order_total as total_amount` → alias detection).
-  - `schema.yml` docs, via `PyYAML` — diffs each model's declared
-    `name`/`data_type` pairs. Since dbt's schema.yml has no `renamed_from`
-    field, a drop+add pair with an *identical* declared type is heuristically
-    treated as a rename rather than two independent changes.
-  - `merge_diffs()` combines diffs from both paths so a single PR that touches
-    both a model's `.sql` and its `schema.yml` produces one `SchemaDiff` per
-    model, not two.
-  - dbt's Jinja macros (`{{ ref(...) }}`, `{{ source(...) }}`) aren't valid SQL,
-    so `sql_utils.render_jinja_refs()` swaps them for their bare table name
-    before handing the text to `sqlglot`. Diffing only needs the `SELECT`
-    column list, not `FROM`-clause resolution, so this is enough — no real
-    dbt/Jinja rendering environment is required.
+- **`change_interpreter.py`** — one LLM call per changed file, returns the
+  entity name/platform/schema this file represents plus a normalized list
+  of changes (`renamed`/`dropped`/`added`/`type_changed` for a column or
+  field within an asset; `resource_renamed`/`resource_deleted` for the
+  whole asset's identity changing, e.g. an S3 bucket or Kafka topic
+  renamed). This is the module that makes Blast format-agnostic: no SQL
+  parser, no HCL parser, no Tableau parser needed.
 
-- **`datahub_client.py`** — reads lineage via DataHub's **MCP Server** first
-  (`mcp_lineage_client.py`, using the real `mcp` Python SDK), falling back
-  automatically to a hand-rolled GraphQL client if the MCP path is
-  unavailable or its result can't be confidently parsed (`BLAST_DATAHUB_MODE`
-  controls this — see "Known limitations" for what's verified vs. not).
-  `count_recent_incidents()` queries the dataset's existing DataHub Incidents
-  and counts how many Blast raised in the last 90 days — the number behind
-  the "this table has broken N times in 90 days" line in the PR comment.
-  `write_incident()` calls DataHub's `raiseIncident` mutation to persist
-  Blast's findings as a native DataHub Incident on the changed dataset — this
-  is the "institutional memory" differentiator (CLAUDE.md §4.2): the *next*
-  PR against that table inherits this history natively in DataHub's UI, not
-  just in a GitHub comment that scrolls away. Splint reuses the same method
-  with `custom_type="BLAST_FIX_PROPOSED"` to record fix attempts too.
-  Set `BLAST_MOCK_DATAHUB=1` to read `examples/demo_dbt_project/lineage_fixture.json`
-  instead of hitting a live server — this is what the demo and local dev run
-  against, and what lets a judge reproduce Blast's output with zero
-  infrastructure.
+- **`entity_resolver.py`** — resolves that name/platform to a DataHub URN.
+  Convention config (`.blast/entities.yml`) first -- explicit, deterministic,
+  reviewed by whoever owns the repo. DataHub search via MCP second, only
+  trusted on an exact name+platform match. Never silently guesses; skips
+  the file (logged) rather than resolving to the wrong entity.
 
-- **`impact_simulator.py`** — the actual simulation, shared by both agents.
-  For each downstream asset's SQL, it collects every referenced column (via
-  `sqlglot`'s AST, not string matching) and checks it against the diff:
-  - a reference to a `dropped`/`renamed` column → **hard break** (the column
-    literally won't exist at query time);
-  - a reference to a `type_changed` column *inside* an aggregate or
-    arithmetic expression (`SUM`, `AVG`, `MIN`, `MAX`, `+ - * /`) → **silent
-    risk** — the query still runs, but its result can silently change (e.g.
-    a `numeric` truncated to `integer` inside a `SUM`);
-  - a reference to a `type_changed` column anywhere else → still **silent
-    risk**, with a softer message (formatting/precision may differ for
-    consumers, but no arithmetic is at stake);
-  - no reference at all → **safe**.
+- **`datahub_client.py` / `mcp_datahub_client.py`** — lineage reads try
+  DataHub's **MCP Server** first (the preferred, DataHub-native
+  integration surface), using the real `mcp` Python SDK with dynamic tool discovery
+  (finds a tool by name pattern rather than assuming one exact name),
+  falling back automatically to hand-rolled GraphQL if MCP is unavailable
+  or its result can't be confidently parsed. `search_entities_via_mcp()`
+  does the same for entity resolution's fallback path.
+  `count_recent_incidents()` / `write_incident()` are the proven,
+  live-tested write-back mechanism -- see "Known limitations" for what's
+  verified vs. not about the MCP half specifically.
 
-  Because this operates on column names (not table-qualified paths), a
-  multi-hop downstream model that references the same original column name
-  through an intermediate view is classified correctly without any explicit
-  transitive-propagation logic — see `examples/demo_pr_change/CHANGE_SCENARIO.md`
-  for a worked 2-hop example.
+- **`breakage_classifier.py`** — one LLM call per downstream asset, given
+  the upstream changes and whatever DataHub knows about that asset's
+  definition (SQL, or a description, or nothing). `needs_review` is the
+  honest degrade when there's nothing to reason from, instead of guessing
+  -- this is what makes classification format-agnostic too: it doesn't
+  need the downstream thing to be SQL, just readable.
 
-- **`report_generator.py`** — provider-agnostic `Summarizer`. `MockSummarizer`
-  is deterministic and network-free (used whenever `BLAST_MOCK_LLM=1`, which
-  is the default in `.env.example` for local dev). `OpenAISummarizer` calls
-  `gpt-4o-mini` — intentionally not a larger model, to keep the whole project
-  running at effectively $0. `OllamaSummarizer` is a local fallback
-  (`BLAST_LLM_PROVIDER=ollama`) if OpenAI quota becomes a risk.
+- **`diff_parser.py` / `impact_simulator.py`** — the *original* Blast
+  pipeline (sqlglot AST diffing and column-reference scanning). These are
+  no longer the production path -- they're now only the internals of the
+  mock (`BLAST_MOCK_LLM=1`) backends of `change_interpreter.py` and
+  `breakage_classifier.py`, kept because they're proven, free, and
+  deterministic, which is exactly what a mock/offline path should be. They
+  only understand dbt-model-shaped SQL and schema.yml; that's enough to
+  replay the bundled demo without network calls, not a general parser.
 
-- **`graph_renderer.py`** — renders the classification results as a
-  color-coded Mermaid `graph LR`, which GitHub renders natively in PR comments
-  with no image hosting needed.
+- **`report_generator.py`**, **`graph_renderer.py`**, **`github_commenter.py`**
+  — unchanged in spirit from the original design: provider-agnostic
+  summary generation, color-coded Mermaid rendering, comment
+  posting/editing via a hidden marker. `github_commenter.py` now also
+  surfaces the incident-history count and, when `DownstreamAsset.owners`
+  is populated, names the owning team/user in plain text (not a live
+  GitHub `@mention` -- a DataHub owner identifier isn't guaranteed to be a
+  valid GitHub handle).
 
-- **`github_commenter.py`** — builds the comment body and posts/updates it via
-  `PyGithub`. Each changed model gets its own hidden marker
-  (`<!-- blast-report:{model} -->`) so re-runs on the same PR edit the
-  existing comment instead of stacking new ones. Surfaces the incident-history
-  count and, when there's a break, a pointer to `/blast-fix`.
+- **`fix_generator.py`**, **`pr_writer.py`** (Splint only) — same
+  pluggable-provider pattern; `pr_writer.py` locates each broken model's
+  source file by the `models/**/{name}.sql` naming convention (DataHub's
+  lineage doesn't expose source file paths) and opens the follow-up PR.
 
-- **`fix_generator.py`** (Splint only) — same pluggable-provider pattern as
-  `report_generator.py`. `MockFixGenerator` is a deterministic regex rename
-  (only handles the `renamed` case — enough to demo/test without an LLM, but
-  intentionally can't fix a retype, since that needs real judgment).
-  `OpenAIFixGenerator` calls `gpt-4o-mini` and is told explicitly not to
-  touch Jinja macros.
+## DataHub Skills vs. the MCP Server -- what Blast actually uses
 
-- **`pr_writer.py`** (Splint only) — locates each broken model's source file
-  by convention, commits the fix to a new branch off the original PR's
-  branch, and opens a follow-up PR targeting it (review-before-merge, not a
-  direct push to someone else's branch).
+DataHub publishes both an **MCP Server** (discrete callable tools: search,
+lineage, enrich, quality, setup) and **Skills**
+(docs.datahub.com/docs/dev-guides/agent-context/skills) -- slash-commands
+(`/datahub-skills:datahub-lineage`, etc.) installed as plugins into
+*interactive* agent CLIs (Claude Code, Cursor, GitHub Copilot, Codex,
+Gemini CLI, Windsurf) via `npx skills add datahub-project/datahub-skills`.
+Skills are explicitly *instructions* for chaining MCP tools into workflows;
+the MCP Server provides the tools themselves.
 
-## Known limitations (by design, for hackathon scope)
+Blast is a headless script running in GitHub Actions, not an interactive
+agent session -- it can't invoke a Skill. What it does instead is
+implement the same *kind* of workflow each relevant Skill describes,
+natively, against the MCP Server's tools directly:
 
-- **MCP path is unverified against a live server.** `mcp_lineage_client.py`
+| Skill | Blast's equivalent |
+|---|---|
+| `datahub-search` | `entity_resolver.py`'s MCP search fallback |
+| `datahub-lineage` | `datahub_client.get_downstream_lineage()` |
+| `datahub-quality` | `count_recent_incidents()` / `write_incident()` (Incidents, today) |
+| `datahub-enrich` | not implemented -- structured properties/tags would be the more idiomatic write-back target than raw Incidents; roadmap |
+| `datahub-setup` | not applicable (interactive auth configuration) |
+
+A developer reviewing a Splint fix PR could separately run
+`/datahub-skills:datahub-lineage` themselves in their own Claude
+Code/Cursor session to explore the graph interactively -- a genuinely
+useful complementary tool, just not something Blast's pipeline depends on.
+
+## Known limitations (by design, for this stage of the project)
+
+- **MCP path is unverified against a live server.** `mcp_datahub_client.py`
   is a genuine, protocol-correct MCP client (real `mcp` SDK, dynamic tool
-  discovery by name rather than a hardcoded assumed tool name), but this
-  environment doesn't have a confirmed DataHub MCP server binary to test it
-  against end-to-end. The GraphQL fallback path is what's actually verified
-  (tested live against a running DataHub instance). Run with
-  `BLAST_DATAHUB_MODE=mcp` to confirm your specific server/tool names work,
-  rather than relying on `auto` to silently fall back.
-- **Agent Context Kit / Analytics Agent are not wired up.** The hackathon
-  pitch mentions usage-based prioritization via DataHub's Analytics Agent;
-  this isn't implemented — MCP Server is the one new DataHub-native
-  integration built for real in this pass. Roadmap item, not a claim.
-- Rename detection in `schema.yml` is a heuristic (same declared type ⇒
-  probably a rename), since dbt doesn't record renames explicitly. The `.sql`
-  path is exact (alias-based), which is why the demo PR changes both files.
-- Classification is column-reference-based static analysis, not query
-  execution — it cannot catch every possible silent behavior change (e.g. a
-  `CASE` expression whose branches depend on a changed column's exact values),
-  only ones visible from how the column is referenced. A related gap found
-  during live testing: a compiled Postgres view can expand `select *` into an
-  explicit column list inside an unused CTE, which the column scanner
-  currently counts as a real reference even when it never reaches the final
-  output — a precision gap, not a crash, tracked as a follow-up.
-- **Splint locates source files by naming convention** (`models/**/{name}.sql`),
-  since DataHub's lineage graph doesn't expose a downstream asset's source
-  file path. If a project doesn't follow that convention, Splint can't find
-  the file to fix and skips it (logged, not silently wrong).
+  discovery), but this environment doesn't have a confirmed DataHub MCP
+  server binary to test it against end-to-end. The GraphQL fallback path
+  is what's actually verified (tested live against a running DataHub
+  instance, including a real schema-mismatch bug found and fixed via
+  introspection). Run with `BLAST_DATAHUB_MODE=mcp` to confirm your
+  specific server/tool names work, rather than relying on `auto` to
+  silently fall back.
+- **`datahub-enrich`/structured-property write-back isn't implemented** --
+  see the Skills table above. Today's write-back is DataHub Incidents,
+  which is proven live; a "risk score" as a structured property is a
+  documented next step, not a claim made now.
+- **Entity resolution depends on `.blast/entities.yml` or a confident
+  DataHub search match.** If a consumer repo doesn't maintain that config
+  and the LLM's guessed name/platform doesn't cleanly match anything in
+  DataHub, Blast skips the file (logged) rather than resolving to the
+  wrong entity. This is intentional -- a wrong URN produces a
+  confidently-wrong report, which is worse than no report.
+- **S3 is a harder case than table-shaped platforms**: DataHub's `s3`
+  source creates one dataset per file-group *within* a bucket, not one
+  dataset for the bucket itself, so a bucket *rename* doesn't cleanly
+  resolve to a single URN via the convention-config path -- see the
+  comment in commerce-warehouse's `.blast/entities.yml`.
+- **Splint locates source files by naming convention**
+  (`models/**/{name}.sql`), since DataHub's lineage graph doesn't expose a
+  downstream asset's source file path.
 - **Splint on fork PRs**: comment-triggered workflows get a read-only
-  `GITHUB_TOKEN` when the triggering PR is from a fork — a GitHub platform
+  `GITHUB_TOKEN` when the triggering PR is from a fork -- a GitHub platform
   restriction, not something `blast-fix.yml` can route around.
+- Classification (via the LLM) is only as good as the definition DataHub
+  has on file for a downstream asset. An asset with no description/SQL/
+  properties gets `needs_review`, honestly, rather than a guessed verdict.

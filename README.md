@@ -2,20 +2,70 @@
 
 **Know what breaks before you merge.**
 
-Blast is a GitHub Action + AI agent that reads a pull request that changes a
-dbt model or schema file, queries [DataHub](https://datahubproject.io/) —
-through its **MCP Server** — for everything downstream, **simulates whether
-that downstream code would actually break**, and posts a risk report as a PR
-comment before anyone merges — then writes the finding back into DataHub as
-an incident, so the next PR against that table inherits the history.
+Blast is a GitHub Action + AI agent that reads a pull request that changes
+*any* data asset's definition — a dbt model, raw SQL DDL, a Terraform
+resource, or anything else an LLM can read — queries
+[DataHub](https://datahubproject.io/) — through its **MCP Server** — for
+everything downstream, **simulates whether that downstream code would
+actually break**, and posts a risk report as a PR comment before anyone
+merges — then writes the finding back into DataHub as an incident, so the
+next PR against that table inherits the history. It's not a dbt-only tool:
+an LLM interprets the diff and classifies downstream risk generically, so
+it works across whatever formats an org's various repos actually use — see
+[`docs/architecture.md`](docs/architecture.md).
 
 Comment `/blast-fix` on a reported PR and **Splint**, a second agent, will
 generate a corrected version of the broken downstream code and open it as a
 follow-up PR for review — turning the warning into an actual fix.
 
-Built for the DataHub hackathon, targeting the **Agents That Do Real Work**
-and **Metadata-Aware Code Generation & Development** tracks.
+## How it works, with an example
 
+Say an engineer renames an S3 bucket in Terraform — `commerce-raw-landing`
+→ `commerce-landing-zone` — and opens a PR. Nothing about that file *looks*
+risky; it's an infrastructure rename, not a code change. Here's what
+happens next:
+
+```mermaid
+sequenceDiagram
+    participant Eng as Engineer
+    participant GH as GitHub PR
+    participant Blast as Blast (GitHub Action)
+    participant LLM as LLM
+    participant DH as DataHub
+
+    Eng->>GH: Opens PR renaming the S3 bucket
+    GH->>Blast: Triggers blast-scan
+    Blast->>LLM: "What changed in this file?"
+    LLM-->>Blast: entity=commerce-raw-landing, kind=resource_renamed
+    Blast->>DH: Resolve entity -> URN, then "what's downstream of this?"
+    DH-->>Blast: raw.orders (Postgres) depends on this bucket
+    Blast->>LLM: "Given this rename, does raw.orders break?"
+    LLM-->>Blast: needs_review (no queryable definition to confirm either way)
+    Blast->>GH: Posts risk report as a PR comment
+    Blast->>DH: Writes the finding back as an incident on the dataset
+    Eng->>GH: Comments /blast-fix (optional)
+    GH->>Blast: Triggers Splint
+    Blast->>GH: Opens a follow-up PR with a proposed fix
+```
+
+Three things worth noticing in that example:
+
+- **No bucket-specific code was written.** The same pipeline handles a
+  renamed SQL column, a dropped Kafka topic, or a Terraform resource,
+  because step one is always "ask an LLM what this diff means," not "run
+  the Terraform parser" or "run the SQL parser."
+- **DataHub is the only source of truth for "what's connected."** Blast
+  never scans other repos or guesses at dependencies — it asks DataHub's
+  lineage graph, which already knows the full picture across every
+  ingested platform.
+- **`needs_review` is a real, intentional outcome**, not a failure. A raw
+  database table has no visible query text to check against, so Blast says
+  so plainly instead of guessing — a wrong confident answer is worse than
+  an honest "a person should look at this one."
+
+See [`docs/architecture.md`](docs/architecture.md) for the full pipeline
+diagrams (blast-scan and Splint), module-by-module design notes, and known
+limitations.
 
 ## Quickstart — run the bundled demo (no infra required)
 
@@ -72,20 +122,14 @@ expected classification for each downstream model.
    `schema.yml` — Blast comments automatically. Comment `/blast-fix` on it
    to have Splint propose a fix.
 
-## How it works
-
-See [`docs/architecture.md`](docs/architecture.md) for the full pipeline
-diagrams (blast-scan and Splint) and module-by-module design notes,
-including known limitations.
-
 ## Repo layout
 
 ```
 blast/
 ├── LICENSE                       # Apache 2.0
 ├── agents/
-│   ├── _common/                  # shared by both agents: diff parsing, DataHub client
-│   │                              # (MCP-first, GraphQL fallback), breakage classification
+│   ├── _common/                  # shared by both agents: change interpretation,
+│   │                              # entity resolution, DataHub client, breakage classification
 │   ├── blast-scan/                # reads a PR, reports risk
 │   └── splint/                    # /blast-fix: proposes a fix as a follow-up PR
 ├── .github/workflows/
@@ -105,9 +149,10 @@ DataHub Core (self-hosted, Apache 2.0) · DataHub MCP Server (lineage reads,
 with a GraphQL fallback) · Python · sqlglot · OpenAI `gpt-4o-mini` ·
 GitHub Actions (reusable workflows) · Mermaid · PyGithub.
 
-Everything runs for $0: DataHub Core is free and self-hosted, GitHub Actions
-is free on public repos, and the only paid API (OpenAI) uses the cheapest
-current model and is fully mockable during development (`BLAST_MOCK_LLM=1`).
+Runs on infrastructure that costs nothing to operate: DataHub Core is free
+and self-hosted, GitHub Actions is free on public repos, and the only paid
+API (OpenAI) uses a small, cheap model and is fully mockable during
+development (`BLAST_MOCK_LLM=1`).
 
 ## License
 

@@ -1,5 +1,13 @@
 """Turns a before/after pair of a dbt model (.sql) or schema doc (.yml) into a
 structured SchemaDiff that impact_simulator.py can reason about.
+
+Only used as the mock (BLAST_MOCK_LLM=1) backend of
+change_interpreter.py's MockChangeInterpreter now -- deterministic and
+free, good enough to replay the bundled demo offline. The production path
+(change_interpreter.py's OpenAIChangeInterpreter) doesn't use this module:
+it hands the raw diff to the LLM instead, which generalizes to any file
+format this sqlglot-based parser was never meant to handle (Terraform,
+DDL, anything else). See docs/architecture.md.
 """
 
 from __future__ import annotations
