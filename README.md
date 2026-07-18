@@ -18,6 +18,69 @@ Comment `/blast-fix` on a reported PR and **Splint**, a second agent, will
 generate a corrected version of the broken downstream code and open it as a
 follow-up PR for review — turning the warning into an actual fix.
 
+## Add it to your repo
+
+No vendored Python, no per-repo config file — just two workflow files.
+Copy each in as-is, adjusting the inputs to match your setup.
+
+**`.github/workflows/blast-scan.yml`** — runs blast-scan on every PR:
+
+```yaml
+name: Blast
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  blast:
+    # A reusable workflow can never have more permissions than its caller
+    # grants, so this must be declared here explicitly.
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@master
+    with:
+      runs_on: self-hosted   # omit for ubuntu-latest, if DataHub is reachable from GitHub-hosted runners
+      setup_python: false    # omit if your runner doesn't already have Python on PATH
+    secrets: inherit
+```
+
+**`.github/workflows/blast-fix.yml`** — enables the `/blast-fix` comment
+trigger, which runs Splint:
+
+```yaml
+name: Splint
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  splint:
+    if: github.event.issue.pull_request && contains(github.event.comment.body, '/blast-fix')
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: Pragadhesh/Blast/.github/workflows/blast-fix.yml@master
+    with:
+      runs_on: self-hosted
+      setup_python: false
+      models_root: "models/"   # wherever your dbt project's models/ actually lives, e.g. "dbt/models/"
+    secrets: inherit
+```
+
+Then add three **repository secrets** — `OPENAI_API_KEY`, `DATAHUB_SERVER`,
+and `DATAHUB_TOKEN` — under **Settings → Secrets and variables → Actions**.
+`DATAHUB_SERVER` is required; the other two are optional only in the sense
+that Blast degrades gracefully without them (mock/offline modes), not for a
+real deployment.
+
+For the fully-commented versions of both files, with the reasoning behind
+every setting, see [`examples/consumer-workflows/`](examples/consumer-workflows/)
+— they reflect the exact configuration this project's own live demo repo
+runs today, not a hypothetical.
+
 ## How it works, with an example
 
 Say an engineer renames an S3 bucket in Terraform — `commerce-raw-landing`
@@ -143,19 +206,10 @@ expected classification for each downstream model.
 
 3. **Install dependencies**: `pip install -r requirements.txt`
 
-4. **Adopt the reusable workflows in your own repo** — no vendored Python,
-   just two 5-line wrapper files. Copy
-   `examples/consumer-workflows/blast-scan.yml` and
-   (optionally) `examples/consumer-workflows/blast-fix.yml` into your repo's
-   `.github/workflows/`, then add `OPENAI_API_KEY`, `DATAHUB_SERVER`,
-   `DATAHUB_TOKEN` as [repository secrets](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions).
-   This only works once Blast itself is pushed to a real GitHub remote that
-   `uses:` can point at. The wrapper files already declare the `permissions:`
-   the calling job needs (`pull-requests: write`, plus `contents: write` for
-   Splint) — a reusable workflow can never have more permissions than its
-   caller grants, so if your repo's default token permissions are
-   restrictive, an explicit `permissions:` block on the calling job (as
-   shown in the examples) is required, not optional.
+4. **Adopt the reusable workflows in your own repo** — see
+   [Add it to your repo](#add-it-to-your-repo) above for the two files to
+   copy in and the secrets to add. This only works once Blast itself is
+   pushed to a real GitHub remote that `uses:` can point at.
 
 5. Open a PR against your dbt project that changes a model or its
    `schema.yml` — Blast comments automatically. Comment `/blast-fix` on it
