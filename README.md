@@ -116,7 +116,12 @@ expected classification for each downstream model.
    `.github/workflows/`, then add `OPENAI_API_KEY`, `DATAHUB_SERVER`,
    `DATAHUB_TOKEN` as [repository secrets](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions).
    This only works once Blast itself is pushed to a real GitHub remote that
-   `uses:` can point at.
+   `uses:` can point at. The wrapper files already declare the `permissions:`
+   the calling job needs (`pull-requests: write`, plus `contents: write` for
+   Splint) — a reusable workflow can never have more permissions than its
+   caller grants, so if your repo's default token permissions are
+   restrictive, an explicit `permissions:` block on the calling job (as
+   shown in the examples) is required, not optional.
 
 5. Open a PR against your dbt project that changes a model or its
    `schema.yml` — Blast comments automatically. Comment `/blast-fix` on it

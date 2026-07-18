@@ -20,6 +20,13 @@ on:
 
 jobs:
   blast:
+    # A reusable workflow can never have more permissions than its caller
+    # grants -- without this block, a repo with restrictive default token
+    # permissions silently caps Blast down to pull-requests: none and the
+    # workflow fails to even start.
+    permissions:
+      contents: read
+      pull-requests: write
     uses: Pragadhesh/Blast/.github/workflows/blast-scan.yml@master
     with:
       runs_on: self-hosted
