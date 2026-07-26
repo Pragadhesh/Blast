@@ -73,7 +73,7 @@ jobs:
       # See the matching step in blast-scan.yml -- MCP is spawned via uvx,
       # so uv needs to be on PATH for the MCP path to be reachable at all.
       - name: Install uv (for DataHub MCP Server)
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
 
       - name: Run Splint
         env:

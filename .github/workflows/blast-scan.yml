@@ -80,7 +80,7 @@ jobs:
       # silently falls back to GraphQL -- installing uv here is what makes
       # the MCP path actually reachable by default, on any runner.
       - name: Install uv (for DataHub MCP Server)
-        uses: astral-sh/setup-uv@v9
+        uses: astral-sh/setup-uv@v9.0.0
 
       - name: Run blast-scan
         env:
