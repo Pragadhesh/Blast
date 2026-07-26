@@ -82,7 +82,11 @@ async def _get_downstream_lineage_async(dataset_urn: str) -> list[dict[str, Any]
 
             result = await session.call_tool(
                 lineage_tool.name,
-                arguments={"urn": dataset_urn, "direction": "DOWNSTREAM"},
+                # mcp-server-datahub's get_lineage() takes `upstream: bool`,
+                # not a `direction` string -- downstream is upstream=False.
+                # max_hops=3 ("equivalent to unlimited" per its docstring)
+                # to match the GraphQL fallback's un-hop-limited query.
+                arguments={"urn": dataset_urn, "upstream": False, "max_hops": 3, "max_results": 50},
             )
             return _parse_lineage_result(result)
 
@@ -98,10 +102,11 @@ async def _search_entities_async(query: str, platform_hint: str | None) -> list[
             if search_tool is None:
                 raise MCPUnavailable("no search-shaped tool exposed by the configured MCP server")
 
-            args: dict[str, Any] = {"query": query}
-            if platform_hint:
-                args["platform"] = platform_hint
-            result = await session.call_tool(search_tool.name, arguments=args)
+            # mcp-server-datahub's search() has no `platform` argument --
+            # platform_hint is applied client-side by
+            # datahub_client.py's _best_search_match() instead, same as it
+            # already is for the GraphQL fallback path.
+            result = await session.call_tool(search_tool.name, arguments={"query": query})
             return _parse_search_result(result)
 
 
@@ -135,13 +140,36 @@ def _extract_json_items(result: Any, *list_keys: str) -> list[Any]:
     return items
 
 
+def _extract_lineage_items(result: Any) -> list[Any]:
+    """get_lineage()'s payload is nested two levels --
+    {"downstreams": {"searchResults": [{"entity": {...}, "degree": N}, ...]}}
+    -- not a flat list of items, so this unwraps that specific shape rather
+    than reusing the generic single-level _extract_json_items.
+    """
+    items: list[Any] = []
+    for content in getattr(result, "content", []) or []:
+        text = getattr(content, "text", None)
+        if not text:
+            continue
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        direction = parsed.get("downstreams")
+        if isinstance(direction, dict):
+            items.extend(direction.get("searchResults") or [])
+    return items
+
+
 def _parse_lineage_result(result: Any) -> list[dict[str, Any]]:
     """Best-effort parse of an MCP lineage tool result into the plain-dict
     shape datahub_client.py expects (matching DownstreamAsset's fields).
     Only trusts shapes it can confidently recognize -- anything else raises
     MCPUnavailable rather than silently returning incomplete/wrong data.
     """
-    raw_items = _extract_json_items(result, "downstream", "relationships", "results")
+    raw_items = _extract_lineage_items(result)
     if not raw_items:
         raise MCPUnavailable("MCP lineage tool returned no parseable JSON content")
 
