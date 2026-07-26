@@ -3,14 +3,16 @@
 This is the "reads DataHub through the MCP Server" integration -- the
 preferred, DataHub-native path instead of hand-rolled GraphQL. It's wired up
 against the real `mcp` Python SDK (StdioServerParameters / stdio_client /
-ClientSession) -- but the exact tool name(s) and result shape DataHub's MCP
-server exposes have NOT been verified against a live server in this
-environment (see docs/architecture.md's verification notes). So this module
-is written defensively: it discovers tools by name pattern rather than
-assuming exact names, and raises MCPUnavailable on anything it can't
-confidently parse rather than returning wrong data. Callers
-(datahub_client.py, entity_resolver.py) catch that and fall back to a
-proven GraphQL path.
+ClientSession) and the real `mcp-server-datahub` package's `search()` /
+`get_lineage()` tools, argument names and result shapes confirmed against a
+live DataHub instance (see docs/architecture.md's verification notes for
+what was updated once real usage was possible). This module still discovers
+tools by name pattern rather than hard-assuming exact tool names, and still
+raises MCPUnavailable on anything it can't confidently parse rather than
+returning wrong data -- that defensiveness was correct going in blind and
+stays correct now, since a future server upgrade could still change shapes
+again. Callers (datahub_client.py, entity_resolver.py) catch that and fall
+back to the GraphQL path.
 
 Configure which MCP server to spawn via:
   DATAHUB_MCP_COMMAND  (default "uvx")
@@ -110,6 +112,44 @@ async def _search_entities_async(query: str, platform_hint: str | None) -> list[
             return _parse_search_result(result)
 
 
+def _entity_name(entity: dict[str, Any], urn: str) -> str:
+    """DataHub's GraphQL schema nests a Dataset's display name under
+    properties.name -- there's no top-level `name` field on the entity
+    itself (confirmed against mcp-server-datahub's own entity_details.gql
+    fragment). Falling back to the raw urn here is what silently broke
+    entity resolution before this was fixed: entity_resolver.py only
+    trusts an exact case-insensitive name match, and a urn never equals
+    the plain model name it's supposed to match against.
+    """
+    props = entity.get("properties")
+    if isinstance(props, dict) and props.get("name"):
+        return props["name"]
+    return entity.get("name") or urn
+
+
+def _entity_platform(entity: dict[str, Any]) -> str:
+    platform = entity.get("platform")
+    if isinstance(platform, dict):
+        return platform.get("name") or "unknown"
+    return platform or "unknown"
+
+
+def _entity_owners(entity: dict[str, Any]) -> list[str]:
+    """Owners live under ownership.owners[].owner.urn, not a flat
+    top-level `owners` list -- same nested shape the GraphQL fallback
+    path already parses in datahub_client.py.
+    """
+    ownership = entity.get("ownership")
+    if not isinstance(ownership, dict):
+        return []
+    owners = []
+    for o in ownership.get("owners") or []:
+        owner = (o or {}).get("owner") or {}
+        if owner.get("urn"):
+            owners.append(owner["urn"])
+    return owners
+
+
 def _find_tool(tools: list[Any], keyword: str) -> Any | None:
     for tool in tools:
         if keyword in getattr(tool, "name", "").lower():
@@ -180,19 +220,16 @@ def _parse_lineage_result(result: Any) -> list[dict[str, Any]]:
         if not urn:
             continue
 
-        platform = entity.get("platform")
-        platform_name = platform.get("name") if isinstance(platform, dict) else platform
-
         view_props = entity.get("viewProperties")
         view_logic = (view_props.get("logic") if isinstance(view_props, dict) else None) or entity.get("view_logic")
 
         assets.append(
             {
                 "urn": urn,
-                "name": entity.get("name") or urn,
+                "name": _entity_name(entity, urn),
                 "hops": item.get("hops") or item.get("degree") or 1,
-                "platform": platform_name or "unknown",
-                "owners": entity.get("owners") or [],
+                "platform": _entity_platform(entity),
+                "owners": _entity_owners(entity),
                 "view_logic": view_logic,
                 "parent": item.get("parent"),
             }
@@ -219,9 +256,7 @@ def _parse_search_result(result: Any) -> list[dict[str, Any]]:
         urn = item.get("urn") or entity.get("urn")
         if not urn:
             continue
-        platform = entity.get("platform")
-        platform_name = platform.get("name") if isinstance(platform, dict) else platform
-        matches.append({"urn": urn, "name": entity.get("name") or urn, "platform": platform_name or "unknown"})
+        matches.append({"urn": urn, "name": _entity_name(entity, urn), "platform": _entity_platform(entity)})
 
     if not matches:
         raise MCPUnavailable("MCP search tool result didn't contain any recognizable entities")
