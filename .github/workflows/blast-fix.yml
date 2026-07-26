@@ -70,6 +70,11 @@ jobs:
       - name: Install Blast's dependencies
         run: pip install -r .blast-agent/requirements.txt
 
+      # See the matching step in blast-scan.yml -- MCP is spawned via uvx,
+      # so uv needs to be on PATH for the MCP path to be reachable at all.
+      - name: Install uv (for DataHub MCP Server)
+        uses: astral-sh/setup-uv@v9
+
       - name: Run Splint
         env:
           PYTHONIOENCODING: utf-8
