@@ -63,6 +63,15 @@ async def _mcp_session():
     command = os.environ.get("DATAHUB_MCP_COMMAND", "uvx")
     args = shlex.split(os.environ.get("DATAHUB_MCP_ARGS", "mcp-server-datahub"))
     server_env = {
+        # mcp-server-datahub logs its own internal DEBUG/INFO chatter
+        # (query counts, token-budget accounting, etc.) via loguru to
+        # stderr, which otherwise spills straight into the Action log.
+        # Loguru reads LOGURU_LEVEL to configure its default sink before
+        # the app starts, so setting it here quiets that noise without
+        # touching the actual MCP protocol (which runs over stdout). An
+        # explicit LOGURU_LEVEL already in the calling environment still
+        # wins, since **os.environ is applied after this default.
+        "LOGURU_LEVEL": "WARNING",
         **os.environ,
         "DATAHUB_GMS_URL": os.environ.get("DATAHUB_SERVER", ""),
         "DATAHUB_GMS_TOKEN": os.environ.get("DATAHUB_TOKEN", ""),
