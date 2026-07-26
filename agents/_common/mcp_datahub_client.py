@@ -14,7 +14,7 @@ proven GraphQL path.
 
 Configure which MCP server to spawn via:
   DATAHUB_MCP_COMMAND  (default "uvx")
-  DATAHUB_MCP_ARGS     (default "acryl-datahub-mcp-server")
+  DATAHUB_MCP_ARGS     (default "mcp-server-datahub")
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ async def _mcp_session():
         raise MCPUnavailable("the `mcp` package isn't installed") from exc
 
     command = os.environ.get("DATAHUB_MCP_COMMAND", "uvx")
-    args = shlex.split(os.environ.get("DATAHUB_MCP_ARGS", "acryl-datahub-mcp-server"))
+    args = shlex.split(os.environ.get("DATAHUB_MCP_ARGS", "mcp-server-datahub"))
     server_env = {
         **os.environ,
         "DATAHUB_GMS_URL": os.environ.get("DATAHUB_SERVER", ""),

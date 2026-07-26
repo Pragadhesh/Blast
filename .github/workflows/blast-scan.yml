@@ -75,7 +75,7 @@ jobs:
         run: pip install -r .blast-agent/requirements.txt
 
       # DataHub's MCP Server is spawned as a subprocess via `uvx
-      # acryl-datahub-mcp-server` (see agents/_common/mcp_datahub_client.py).
+      # mcp-server-datahub` (see agents/_common/mcp_datahub_client.py).
       # Without uv on PATH that spawn fails and BLAST_DATAHUB_MODE=auto
       # silently falls back to GraphQL -- installing uv here is what makes
       # the MCP path actually reachable by default, on any runner.
